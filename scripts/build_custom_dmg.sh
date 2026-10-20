@@ -13,7 +13,12 @@ echo "1. 构建前端..."
 npm run build
 
 echo "2. 构建 Tauri App (多核加速)..."
-npm run tauri build -- --bundles app
+npm run tauri build -- --bundles app || true
+
+if [ ! -d "src-tauri/target/release/bundle/macos/Antigravity Tools.app" ]; then
+    echo "❌ 错误: 未找到构建好的 App。"
+    exit 1
+fi
 
 echo "3. 生成发布 DMG 安装包..."
 bash scripts/package_dmg.sh
