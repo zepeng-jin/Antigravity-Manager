@@ -34,8 +34,18 @@ pub struct ProbeModelTarget {
 pub fn get_default_probe_targets() -> Vec<ProbeModelTarget> {
     vec![
         ProbeModelTarget {
-            id: "claude-3-5-sonnet".to_string(),
-            name: "Claude 3.5 Sonnet".to_string(),
+            id: "gemini-3.8-flash-high".to_string(),
+            name: "Gemini 3.8 Flash".to_string(),
+            vendor: "Google".to_string(),
+        },
+        ProbeModelTarget {
+            id: "claude-3.8-flash-high".to_string(),
+            name: "Claude 3.8 Flash".to_string(),
+            vendor: "Anthropic".to_string(),
+        },
+        ProbeModelTarget {
+            id: "claude-sonnet-4-6".to_string(),
+            name: "Claude Sonnet 4.6".to_string(),
             vendor: "Anthropic".to_string(),
         },
         ProbeModelTarget {
@@ -137,13 +147,20 @@ pub async fn probe_single_model_speed(
     let (access_token, project_id) =
         crate::modules::quota::get_valid_token_for_warmup(&active_acc).await?;
 
-    // 3. 构建轻量探针报文 (Minimal payload: 极小 token 开销)
-    let is_claude = model_name.to_lowercase().contains("claude");
+    // 3. 构建轻量探针报文并进行核心模型路由映射
+    let empty_map = std::collections::HashMap::new();
+    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
+        model_name,
+        &empty_map,
+    );
+
+    let is_claude = mapped_model.to_lowercase().contains("claude")
+        || model_name.to_lowercase().contains("claude");
     let session_id = format!("speed_probe_{}", chrono::Utc::now().timestamp_millis());
 
     let body_res: Result<Value, String> = if is_claude {
         let claude_request = crate::proxy::mappers::claude::models::ClaudeRequest {
-            model: model_name.to_string(),
+            model: mapped_model.clone(),
             messages: vec![crate::proxy::mappers::claude::models::Message {
                 role: "user".to_string(),
                 content: crate::proxy::mappers::claude::models::MessageContent::String(
@@ -176,7 +193,7 @@ pub async fn probe_single_model_speed(
         )
     } else {
         let base_request = serde_json::json!({
-            "model": model_name,
+            "model": mapped_model,
             "contents": [{"role": "user", "parts": [{"text": "1+1="}]}],
             "generationConfig": {
                 "maxOutputTokens": 3,
@@ -188,7 +205,7 @@ pub async fn probe_single_model_speed(
         Ok(crate::proxy::mappers::gemini::wrapper::wrap_request(
             &base_request,
             &project_id,
-            model_name,
+            &mapped_model,
             None,
             Some(&session_id),
             None,
@@ -212,10 +229,12 @@ pub async fn probe_single_model_speed(
         .await;
 
     let display_name = match model_name {
-        "claude-3-5-sonnet" | "claude-sonnet-4-6" => "Claude 3.5 Sonnet",
+        "gemini-3.8-flash-high" | "gemini-3.8-flash" => "Gemini 3.8 Flash",
+        "claude-3.8-flash-high" | "claude-3.8-flash" => "Claude 3.8 Flash",
+        "claude-sonnet-4-6" => "Claude Sonnet 4.6",
+        "claude-3-5-sonnet" => "Claude 3.5 Sonnet",
         "gemini-2.0-flash" => "Gemini 2.0 Flash",
         "gemini-1.5-pro" => "Gemini 1.5 Pro",
-        "gemini-1.5-flash" => "Gemini 1.5 Flash",
         other => other,
     }
     .to_string();

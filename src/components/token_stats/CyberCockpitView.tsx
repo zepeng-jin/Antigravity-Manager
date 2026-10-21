@@ -1,5 +1,6 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { motion } from 'framer-motion';
 import {
     AlertTriangle,
     ArrowUpRight,
@@ -77,6 +78,42 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
     const [userTokensLoading, setUserTokensLoading] = useState<boolean>(false);
     const [selectedUserToken, setSelectedUserToken] = useState<UserTokenSummaryItem | null>(null);
     const [showUserTokenModal, setShowUserTokenModal] = useState<boolean>(false);
+
+    // 实时速度探测与摸鱼雷达状态
+    const [probeResult, setProbeResult] = useState<any>(() => {
+        try {
+            const saved = localStorage.getItem('antigravity_last_speed_probe_result');
+            if (saved) return JSON.parse(saved);
+        } catch (e) {}
+        return null;
+    });
+    const [isProbing, setIsProbing] = useState<boolean>(false);
+    const [targetModel, setTargetModel] = useState<string>('gemini-3.8-flash-high');
+    const [showCustomModelInput, setShowCustomModelInput] = useState<boolean>(false);
+    const [customModelVal, setCustomModelVal] = useState<string>('');
+
+    useEffect(() => {
+        if (modelShareItems && modelShareItems.length > 0 && modelShareItems[0]?.model) {
+            setTargetModel(modelShareItems[0].model);
+        }
+    }, [modelShareItems]);
+
+    const handleRunProbe = useCallback(async (modelToTest?: string) => {
+        const m = (modelToTest || targetModel).trim();
+        if (!m) return;
+        setIsProbing(true);
+        try {
+            const res = await invoke<any>('run_speed_probe', { model: m, accountEmail: null });
+            setProbeResult(res);
+            try {
+                localStorage.setItem('antigravity_last_speed_probe_result', JSON.stringify(res));
+            } catch (e) {}
+        } catch (e) {
+            console.error('[CyberCockpit] Probe error:', e);
+        } finally {
+            setIsProbing(false);
+        }
+    }, [targetModel]);
 
     // 获取用户 Token 消耗排行榜数据
     useEffect(() => {
@@ -359,7 +396,35 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                             <span className="text-xs font-mono font-bold tracking-wider text-gray-700 dark:text-gray-200 uppercase">
                                 {t('token_stats.cockpit_dispatch_report', '用量调度全景 DISPATCH REPORT')}
                             </span>
-                            <div className="flex items-center gap-3 text-xs font-mono text-gray-500 dark:text-gray-400">
+                            <div className="flex flex-wrap items-center gap-3 text-xs font-mono text-gray-500 dark:text-gray-400">
+                                {/* 实时测速控制小胶囊 */}
+                                <div className="flex items-center gap-1.5 bg-gray-100 dark:bg-white/[0.05] px-2 py-0.5 rounded-lg border border-gray-200/70 dark:border-white/[0.08]">
+                                    <span className="text-[10px] text-gray-400">探针:</span>
+                                    <span className="text-indigo-600 dark:text-cyan-300 font-bold max-w-[120px] truncate text-[11px]" title={targetModel}>
+                                        {targetModel}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleRunProbe()}
+                                        disabled={isProbing}
+                                        className={`text-indigo-600 dark:text-cyan-400 hover:text-indigo-700 dark:hover:text-white p-0.5 transition-all ${
+                                            isProbing ? 'animate-spin opacity-70' : 'active:scale-95'
+                                        }`}
+                                        title="点击对当前模型执行即时链路测速"
+                                    >
+                                        <RefreshCw className="w-3 h-3" />
+                                    </button>
+                                </div>
+
+                                {/* 自选模型快捷触发切换 */}
+                                <button
+                                    type="button"
+                                    onClick={() => setShowCustomModelInput(!showCustomModelInput)}
+                                    className="text-[10px] text-indigo-600 dark:text-cyan-400 hover:underline font-mono"
+                                >
+                                    {showCustomModelInput ? '[关闭选择]' : '[自由切模型]'}
+                                </button>
+
                                 <span>
                                     {t('token_stats.cockpit_period_label', '周期')}:{' '}
                                     <strong className="text-gray-900 dark:text-white">
@@ -384,6 +449,60 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 )}
                             </div>
                         </div>
+
+                        {/* 自定义模型自由输入与候选面板 (当 showCustomModelInput 为 true 时展开) */}
+                        {showCustomModelInput && (
+                            <div className="shrink-0 mb-2 p-2 bg-gray-50/90 dark:bg-white/[0.04] rounded-xl border border-indigo-200/50 dark:border-cyan-500/20 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+                                <div className="flex items-center gap-1.5 flex-1 min-w-[240px]">
+                                    <span className="text-gray-500 dark:text-gray-400 text-[10px]">自选测速模型:</span>
+                                    <input
+                                        type="text"
+                                        value={customModelVal}
+                                        onChange={(e) => setCustomModelVal(e.target.value)}
+                                        placeholder="如 gemini-3.8-flash-high, claude-3.8..."
+                                        className="flex-1 bg-white dark:bg-[#121826] border border-gray-200 dark:border-white/[0.1] rounded-lg px-2 py-1 text-xs text-gray-800 dark:text-white outline-none focus:border-indigo-500 dark:focus:border-cyan-400 font-mono"
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && customModelVal.trim()) {
+                                                setTargetModel(customModelVal.trim());
+                                                handleRunProbe(customModelVal.trim());
+                                                setShowCustomModelInput(false);
+                                            }
+                                        }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (customModelVal.trim()) {
+                                                setTargetModel(customModelVal.trim());
+                                                handleRunProbe(customModelVal.trim());
+                                                setShowCustomModelInput(false);
+                                            }
+                                        }}
+                                        className="px-2.5 py-1 bg-indigo-600 dark:bg-cyan-600 hover:bg-indigo-700 dark:hover:bg-cyan-500 text-white font-semibold rounded-lg text-xs"
+                                    >
+                                        测速
+                                    </button>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[10px] text-gray-400">快捷推荐:</span>
+                                    {['gemini-3.8-flash-high', 'claude-3.8-flash-high', 'claude-sonnet-4-6', 'gemini-2.0-flash'].map((m) => (
+                                        <button
+                                            key={m}
+                                            type="button"
+                                            onClick={() => {
+                                                setTargetModel(m);
+                                                handleRunProbe(m);
+                                                setShowCustomModelInput(false);
+                                            }}
+                                            className="px-2 py-0.5 rounded bg-white dark:bg-white/[0.08] hover:bg-gray-100 dark:hover:bg-white/[0.15] text-[10px] text-gray-700 dark:text-gray-300 border border-gray-200/60 dark:border-white/[0.08]"
+                                        >
+                                            {m.replace('-high', '').replace('claude-', '').replace('gemini-', '')}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
 
                         {/* 三栏并排核心：左用量/模型列表 + 中360°辐射彩针 + 右财务与均次指标 */}
                         <div className="flex-1 min-h-0 grid grid-cols-12 gap-3 items-center">
@@ -427,8 +546,11 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         return (
                                             <div
                                                 key={m.name}
-                                                onClick={() => setSelectedModelIdx(isSelected ? null : idx)}
-                                                className={`flex items-center justify-between text-xs font-mono px-2 py-0.5 rounded transition-all cursor-pointer ${
+                                                onClick={() => {
+                                                    setSelectedModelIdx(isSelected ? null : idx);
+                                                    setTargetModel(m.name);
+                                                }}
+                                                className={`group flex items-center justify-between text-xs font-mono px-2 py-0.5 rounded transition-all cursor-pointer ${
                                                     isSelected
                                                         ? 'bg-blue-50 dark:bg-white/[0.12] ring-1 ring-blue-500/30 dark:ring-white/20'
                                                         : 'hover:bg-gray-100 dark:hover:bg-white/[0.05]'
@@ -442,6 +564,19 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                                     <span className="text-gray-700 dark:text-gray-300 truncate text-[11px] font-medium">
                                                         {m.name}
                                                     </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setTargetModel(m.name);
+                                                            handleRunProbe(m.name);
+                                                        }}
+                                                        disabled={isProbing}
+                                                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-gray-200 dark:hover:bg-white/[0.1] text-indigo-600 dark:text-cyan-400 transition-opacity"
+                                                        title={`测速 ${m.name}`}
+                                                    >
+                                                        <Zap className="w-2.5 h-2.5" />
+                                                    </button>
                                                 </div>
                                                 <div className="flex items-center gap-2 shrink-0">
                                                     <span className="text-gray-500 dark:text-gray-400 text-[10px] font-mono">{formatNumber(m.tokens)}</span>
@@ -550,8 +685,28 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                     </div>
                                 </div>
 
-                                <div className="pt-1 border-t border-gray-100 dark:border-white/[0.06] text-[10px] font-mono text-gray-500 dark:text-gray-400">
-                                    <span>{t('token_stats.cockpit_status_normal', '网关调用正常')}</span>
+                                <div className="pt-1 border-t border-gray-100 dark:border-white/[0.06] text-[10px] font-mono flex items-center justify-between">
+                                    <div className="flex items-center gap-1.5 truncate">
+                                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                            isProbing ? 'bg-amber-400 animate-ping' :
+                                            probeResult?.success ? 'bg-emerald-400' :
+                                            probeResult?.error_msg ? 'bg-rose-400' : 'bg-emerald-400'
+                                        }`} />
+                                        <span className="text-gray-600 dark:text-gray-300 truncate" title={probeResult?.slack_advice || '网关调用正常'}>
+                                            {isProbing ? '正在测速...' :
+                                             probeResult?.success ? `首字 ${probeResult.ttft_ms}ms · ${probeResult.slack_title}` :
+                                             probeResult?.error_msg ? '测速受阻 · 点击重测' :
+                                             t('token_stats.cockpit_status_normal', '网关调用正常')}
+                                        </span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => handleRunProbe()}
+                                        disabled={isProbing}
+                                        className="text-indigo-600 dark:text-cyan-400 hover:underline font-bold shrink-0 ml-1 cursor-pointer"
+                                    >
+                                        {probeResult?.success ? `${probeResult.tps} t/s` : '测速'}
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -630,11 +785,15 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                             </div>
                         </div>
 
-                        {/* 2.2 右翼：放大版 J23 智能缓存刻度仪表 */}
-                        <div className="bg-white/95 dark:bg-[#0c121e] border border-gray-200/90 dark:border-[#1e2a3f] rounded-2xl p-3.5 flex flex-col justify-between shadow-sm dark:shadow-lg relative overflow-hidden transition-colors">
+                        {/* 2.2 右翼：动感跑车码表 J23 效能与速度仪表盘 */}
+                        <div
+                            onClick={() => handleRunProbe()}
+                            className="group bg-white/95 dark:bg-[#0c121e] border border-gray-200/90 dark:border-[#1e2a3f] hover:border-indigo-500/40 dark:hover:border-cyan-500/40 rounded-2xl p-3.5 flex flex-col justify-between shadow-sm dark:shadow-lg relative overflow-hidden transition-all cursor-pointer"
+                            title="点击码表立刻向当前模型点火测速，指针动态摆动！"
+                        >
                             <div className="shrink-0 flex items-center justify-between pb-1.5 border-b border-gray-100 dark:border-white/[0.06]">
                                 <span className="font-mono text-gray-700 dark:text-gray-300 font-bold flex items-center gap-1.5 text-xs">
-                                    <Flame className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
+                                    <Flame className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400 group-hover:animate-bounce" />
                                     {t('token_stats.cockpit_efficiency_index', '效能指数')} · J23
                                 </span>
                                 <div className="flex items-center gap-2">
@@ -644,13 +803,15 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         </span>
                                     )}
                                     <span className="font-mono text-[11px] text-teal-600 dark:text-teal-400 font-semibold flex items-center gap-1">
-                                        <Zap className="w-3 h-3" />
-                                        {t('token_stats.zero_latency', '0 延时吞吐')}
+                                        <Zap className={`w-3 h-3 ${isProbing ? 'animate-spin text-amber-400' : ''}`} />
+                                        {isProbing ? '测速中...' :
+                                         probeResult?.success ? `${probeResult.ttft_ms}ms · ${probeResult.tps}t/s` :
+                                         t('token_stats.zero_latency', '0 延时吞吐')}
                                     </span>
                                 </div>
                             </div>
 
-                            {/* 舒展半圆发光刻度弧 */}
+                            {/* 跑车运动码表 (带可动指针、发光流线与轴承) */}
                             <div className="flex-1 relative flex items-center justify-center overflow-hidden py-0.5">
                                 <svg width="220" height="96" viewBox="0 0 220 96" className="overflow-visible">
                                     <defs>
@@ -659,7 +820,18 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                             <stop offset="50%" stopColor="#eab308" />
                                             <stop offset="100%" stopColor="#10b981" />
                                         </linearGradient>
+                                        <linearGradient id="needleGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+                                            <stop offset="0%" stopColor="#f43f5e" />
+                                            <stop offset="70%" stopColor="#fb7185" />
+                                            <stop offset="100%" stopColor="#ffffff" />
+                                        </linearGradient>
+                                        <filter id="glowNeedle" x="-30%" y="-30%" width="160%" height="160%">
+                                            <feGaussianBlur stdDeviation="2" result="blur" />
+                                            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                                        </filter>
                                     </defs>
+
+                                    {/* 41 根半圆刻度线 */}
                                     {Array.from({ length: 41 }).map((_, i) => {
                                         const angle = Math.PI + (i / 40) * Math.PI;
                                         const cx = 110;
@@ -670,7 +842,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         const y1 = cy + rInner * Math.sin(angle);
                                         const x2 = cx + rOuter * Math.cos(angle);
                                         const y2 = cy + rOuter * Math.sin(angle);
-                                        const isActive = (i / 40) * 100 <= Math.max(10, cacheMetrics.hitRate);
+                                        const isActive = (i / 40) * 100 <= Math.max(8, cacheMetrics.hitRate);
 
                                         return (
                                             <line
@@ -686,8 +858,65 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                             />
                                         );
                                     })}
+
+                                    {/* 跑车动态摆动发光指针 (Framer Motion 真实弹簧动效，可以动！) */}
+                                    <motion.g
+                                        initial={{ rotate: -90 }}
+                                        animate={{
+                                            rotate: -90 + (Math.min(100, Math.max(0, cacheMetrics.hitRate)) / 100) * 180,
+                                        }}
+                                        transition={{
+                                            type: 'spring',
+                                            damping: 14,
+                                            stiffness: 85,
+                                            restDelta: 0.2,
+                                        }}
+                                        style={{ transformOrigin: '110px 90px' }}
+                                    >
+                                        {/* 指针背光虚影 */}
+                                        <line
+                                            x1="110"
+                                            y1="90"
+                                            x2="110"
+                                            y2="30"
+                                            stroke="#f43f5e"
+                                            strokeWidth="3"
+                                            strokeLinecap="round"
+                                            opacity="0.45"
+                                            filter="url(#glowNeedle)"
+                                        />
+                                        {/* 锐利红色机械指针 */}
+                                        <polygon
+                                            points="108.8,90 111.2,90 110.5,25 109.5,25"
+                                            fill="url(#needleGrad)"
+                                        />
+                                        {/* 指针尖端白热高亮点 */}
+                                        <circle cx="110" cy="24" r="1.5" fill="#ffffff" />
+                                    </motion.g>
+
+                                    {/* 中心双层金属轮毂轴承 (Pivot Hub) */}
+                                    <circle
+                                        cx="110"
+                                        cy="90"
+                                        r="7.5"
+                                        className="fill-gray-900 dark:fill-[#0c121e] stroke-gray-300 dark:stroke-[#334155]"
+                                        strokeWidth="1.5"
+                                    />
+                                    <circle
+                                        cx="110"
+                                        cy="90"
+                                        r="4"
+                                        className="fill-rose-500 shadow-sm"
+                                    />
+                                    <circle
+                                        cx="110"
+                                        cy="90"
+                                        r="1.5"
+                                        fill="#ffffff"
+                                    />
                                 </svg>
-                                <div className="absolute bottom-1 flex flex-col items-center text-center">
+
+                                <div className="absolute bottom-1 flex flex-col items-center text-center pointer-events-none">
                                     <span className="text-[10px] font-mono text-gray-500 dark:text-gray-400">
                                         {t('token_stats.cockpit_hit_rate', '命中率')}: <strong className="text-teal-600 dark:text-emerald-400 font-mono">{cacheMetrics.hitRate.toFixed(1)}%</strong>
                                     </span>

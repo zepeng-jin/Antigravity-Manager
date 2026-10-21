@@ -35,15 +35,18 @@ export interface ProbeModelTarget {
 }
 
 const DEFAULT_TARGETS: ProbeModelTarget[] = [
-    { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet', vendor: 'Anthropic' },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', vendor: 'Google' },
-    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', vendor: 'Google' },
+    { id: 'gemini-3.8-flash-high', name: '3.8 Flash', vendor: 'Google' },
+    { id: 'claude-3.8-flash-high', name: 'Claude 3.8', vendor: 'Anthropic' },
+    { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', vendor: 'Anthropic' },
+    { id: 'gemini-2.0-flash', name: '2.0 Flash', vendor: 'Google' },
 ];
 
 const LOCAL_STORAGE_KEY = 'antigravity_last_speed_probe_result';
 
 export function SpeedProbeCard() {
-    const [selectedModel, setSelectedModel] = useState<string>('gemini-2.0-flash');
+    const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash-high');
+    const [customModelInput, setCustomModelInput] = useState<string>('');
+    const [showInput, setShowInput] = useState<boolean>(false);
     const [loading, setLoading] = useState<boolean>(false);
     const [result, setResult] = useState<SpeedProbeResult | null>(() => {
         try {
@@ -94,7 +97,7 @@ export function SpeedProbeCard() {
     // 初次加载如果无历史测速结果，自动轻量测速一次
     useEffect(() => {
         if (!result) {
-            handleProbe('gemini-2.0-flash');
+            handleProbe('gemini-3.8-flash-high');
         }
     }, []);
 
@@ -183,11 +186,12 @@ export function SpeedProbeCard() {
                                     type="button"
                                     onClick={() => {
                                         setSelectedModel(t.id);
+                                        setShowInput(false);
                                         handleProbe(t.id);
                                     }}
                                     disabled={loading}
                                     className={`px-2.5 py-1 rounded-lg font-medium transition-all cursor-pointer ${
-                                        selectedModel === t.id
+                                        selectedModel === t.id && !showInput
                                             ? 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm font-bold dark:border dark:border-white/[0.12]'
                                             : 'text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
                                     }`}
@@ -195,6 +199,17 @@ export function SpeedProbeCard() {
                                     {t.name.replace('Gemini ', '').replace('Claude ', '')}
                                 </button>
                             ))}
+                            <button
+                                type="button"
+                                onClick={() => setShowInput(!showInput)}
+                                className={`px-2 py-1 rounded-lg font-medium transition-all cursor-pointer ${
+                                    showInput
+                                        ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-cyan-400 shadow-sm font-bold dark:border dark:border-white/[0.12]'
+                                        : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                                }`}
+                            >
+                                + 自选
+                            </button>
                         </div>
 
                         {/* 测速动作按钮 */}
@@ -212,6 +227,40 @@ export function SpeedProbeCard() {
                         </button>
                     </div>
                 </div>
+
+                {/* 自由输入自选模型输入栏 */}
+                {showInput && (
+                    <div className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-white/[0.04] rounded-xl border border-indigo-200/60 dark:border-white/[0.08] text-xs font-mono">
+                        <span className="text-gray-500 dark:text-gray-400 text-[11px] shrink-0">自选测速模型:</span>
+                        <input
+                            type="text"
+                            value={customModelInput}
+                            onChange={(e) => setCustomModelInput(e.target.value)}
+                            placeholder="如 gemini-3.8-flash-high, claude-3.8-flash..."
+                            className="flex-1 bg-white dark:bg-[#121826] border border-gray-200 dark:border-white/[0.1] rounded-lg px-2.5 py-1 text-xs text-gray-800 dark:text-white outline-none focus:border-indigo-500 dark:focus:border-cyan-400 font-mono"
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && customModelInput.trim()) {
+                                    setSelectedModel(customModelInput.trim());
+                                    handleProbe(customModelInput.trim());
+                                    setShowInput(false);
+                                }
+                            }}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (customModelInput.trim()) {
+                                    setSelectedModel(customModelInput.trim());
+                                    handleProbe(customModelInput.trim());
+                                    setShowInput(false);
+                                }
+                            }}
+                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs cursor-pointer shrink-0"
+                        >
+                            测试此模型
+                        </button>
+                    </div>
+                )}
 
                 {/* 核心中段：左右双核 Bento 布局 */}
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-3.5 items-center">
