@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import AddAccountDialog from '../components/accounts/AddAccountDialog';
 import { showToast } from '../components/common/ToastContainer';
 import BestAccounts from '../components/dashboard/BestAccounts';
+import { SpeedProbeCard } from '../components/dashboard/SpeedProbeCard';
 import { findImageQuotaModel, findQuotaModel } from '../config/modelConfig';
 import CurrentAccount from '../components/dashboard/CurrentAccount';
 import { useAccountStore } from '../stores/useAccountStore';
@@ -478,6 +479,9 @@ function Dashboard() {
                         </div>
 
                 <div className="space-y-4">
+                        {/* 实时服务速度探测与摸鱼指数雷达 */}
+                        <SpeedProbeCard />
+
                         {/* 核心 Bento 4 卡矩阵 (纯黑极简风格) */}
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5 items-stretch">
                             {/* 卡片 1: 账号底座资产 */}

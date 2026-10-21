@@ -773,6 +773,10 @@ pub fn run() {
             commands::get_token_stats_account_trend_minute,
             commands::get_token_stats_account_trend_hourly,
             commands::get_token_stats_account_trend_daily,
+            // 实时服务速度探测与摸鱼指数
+            commands::run_speed_probe,
+            commands::run_all_models_speed_probe,
+            commands::get_probe_model_targets,
             proxy::cli_sync::get_cli_sync_status,
             proxy::cli_sync::execute_cli_sync,
             proxy::cli_sync::execute_cli_restore,

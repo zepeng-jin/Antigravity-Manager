@@ -1555,6 +1555,24 @@ pub async fn get_token_stats_account_trend_daily(
 }
 
 #[tauri::command]
+pub async fn run_speed_probe(
+    model: String,
+    account_email: Option<String>,
+) -> Result<crate::modules::speed_probe::SpeedProbeResult, String> {
+    crate::modules::speed_probe::probe_single_model_speed(&model, account_email.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn run_all_models_speed_probe() -> Result<Vec<crate::modules::speed_probe::SpeedProbeResult>, String> {
+    crate::modules::speed_probe::probe_all_models_speed().await
+}
+
+#[tauri::command]
+pub fn get_probe_model_targets() -> Vec<crate::modules::speed_probe::ProbeModelTarget> {
+    crate::modules::speed_probe::get_default_probe_targets()
+}
+
+#[tauri::command]
 pub async fn query_transit_info(url: String, key: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))

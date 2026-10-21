@@ -22,6 +22,7 @@ pub mod proxy_db;
 pub mod quota;
 pub mod scheduler;
 pub mod security_db;
+pub mod speed_probe;
 pub mod startup_quiet;
 pub mod token_stats;
 pub mod tray;
