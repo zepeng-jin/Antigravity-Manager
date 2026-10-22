@@ -1573,6 +1573,11 @@ pub fn get_probe_model_targets() -> Vec<crate::modules::speed_probe::ProbeModelI
 }
 
 #[tauri::command]
+pub fn get_latest_real_speed() -> Result<Option<crate::modules::speed_probe::SpeedProbeResult>, String> {
+    crate::modules::speed_probe::get_latest_real_request_speed()
+}
+
+#[tauri::command]
 pub async fn query_transit_info(url: String, key: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))

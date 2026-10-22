@@ -85,14 +85,28 @@ export function SpeedProbeCard() {
         }
     }, [selectedModel]);
 
-    // 初次加载：若本地无记录，则仅针对当前这唯一的主力模型发起一次轻量探活
+    // 核心优化 1：初次载入时，优先从真实网关日志拉取最近 1 次业务请求的速度 (解决明明在使用却显示3小时前空闲的Bug)
     useEffect(() => {
-        if (!result) {
-            handleProbe('gemini-3.8-flash-high');
-        }
+        invoke<RealtimeSpeedMetrics | null>('get_latest_real_speed')
+            .then((latest) => {
+                if (latest) {
+                    setResult(latest);
+                    if (latest.model) {
+                        setSelectedModel(latest.model);
+                    }
+                    try {
+                        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(latest));
+                    } catch (e) {}
+                } else if (!result) {
+                    handleProbe('gemini-3.8-flash-high');
+                }
+            })
+            .catch(() => {
+                if (!result) handleProbe('gemini-3.8-flash-high');
+            });
     }, []);
 
-    // 核心优化：除初次探测外，后续监听真实代理请求日志，全自动实时零开销刷新速度与摸鱼指数
+    // 核心优化 2：持续监听真实代理请求日志，全自动实时零开销刷新速度与摸鱼指数
     useEffect(() => {
         if (!isTauri()) return;
         let unlistenFn: (() => void) | null = null;
@@ -100,11 +114,16 @@ export function SpeedProbeCard() {
             try {
                 unlistenFn = await listen<any>('proxy://request', (event) => {
                     const log = event.payload;
-                    // 过滤非正常请求与极短的假回环 (< 40ms)，避免产生 1ms 的极速误导
+                    // 过滤非业务假请求与极短本地回环 (< 40ms)
                     if (!log || typeof log.duration !== 'number' || log.duration < 40) return;
                     const reqModel = log.model || selectedModel;
                     const status = log.status || 200;
                     const outputTokens = log.output_tokens || 0;
+
+                    // 自动同步当前主力模型为真实触发请求的模型
+                    if (log.model) {
+                        setSelectedModel(log.model);
+                    }
 
                     const liveMetrics = computeSlackStatus(
                         log.duration,

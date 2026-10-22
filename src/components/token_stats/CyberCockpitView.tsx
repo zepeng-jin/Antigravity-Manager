@@ -149,6 +149,18 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
         };
     }, [needleAngleRad]);
 
+    // 初次载入时，优先从真实网关日志同步最近一次真实调用的耗时 (与流量日志完全一致)
+    useEffect(() => {
+        invoke<any>('get_latest_real_speed')
+            .then((latest) => {
+                if (latest) {
+                    setProbeResult(latest);
+                    if (latest.model) setTargetModel(latest.model);
+                }
+            })
+            .catch(() => {});
+    }, []);
+
     // 核心优化：除初次探测外，后续监听真实网关调用日志，零开销自动实时同步速度与码表指针
     useEffect(() => {
         if (!isTauri()) return;

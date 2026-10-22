@@ -126,18 +126,18 @@ pub fn calculate_slack_metrics(
             || err.contains("quota")
         {
             (
-                "🚨 官方限流排队 · 奉旨摸鱼 🎮",
-                "上游接口触发频率限制或配额排队，非战之罪，请理直气壮去摸鱼！",
+                "官方队列拥塞 · 限流排队",
+                "上游接口已达并发上限或触发配额排队，建议离线休息片刻。",
             )
         } else if err.contains("500") || err.contains("503") || err.contains("UNAVAILABLE") {
             (
-                "⚠️ 官方服务波动 · 建议喝茶 🍵",
-                "上游服务器暂时故障中，服务不可用，建议去泡杯茶稍后再试。",
+                "上游服务波动 · 建议休息",
+                "上游服务器暂时故障，服务不可用，建议稍后再试。",
             )
         } else {
             (
-                "❌ 探针连接受阻 · 建议检查网络 🌐",
-                "无法连接上游 API，请检查本机代理或网络连通性。",
+                "网络连接异常 · 检查通道",
+                "上游请求无法送达，请确认本机代理隧道或网络连通性。",
             )
         };
         return ("slack".to_string(), 100, title.to_string(), advice.to_string());
@@ -147,29 +147,29 @@ pub fn calculate_slack_metrics(
         (
             "sprint".to_string(),
             5,
-            "⚡️ 极速狂飙 · 搬砖效率翻倍 🚀".to_string(),
-            "上游响应极其丝滑，毫秒级首字吐出，趁现在灵感爆发疯狂输出代码！".to_string(),
+            "极速响应 · 高效冲刺".to_string(),
+            "上游响应极其丝滑，毫秒级首字吐出，建议保持专注高效产出。".to_string(),
         )
     } else if ttft_ms < 1400 {
         (
             "smooth".to_string(),
             30,
-            "💻 节奏平稳 · 专注干活 💼".to_string(),
-            "服务延迟适中稳定，上游状态良好，一杯茶一包烟，一行代码写一天。".to_string(),
+            "运行平稳 · 节奏适中".to_string(),
+            "服务延迟处于平稳区间，状态良好，推荐持续推进工作任务。".to_string(),
         )
     } else if ttft_ms < 2800 {
         (
             "tea".to_string(),
             70,
-            "☕️ 上游迟缓 · 适度摸鱼 🍵".to_string(),
-            "官方接口排队中，延迟明显偏高（>1.5s），建议起身走走、活动肩颈。".to_string(),
+            "上游排队迟缓 · 建议稍憩".to_string(),
+            "官方接口出现轻度拥塞（延迟 >1.5s），建议起身走走、喝口水调整节奏。".to_string(),
         )
     } else {
         (
             "slack".to_string(),
             95,
-            "🏖️ 深度拥堵 · 奉旨摸鱼 😴".to_string(),
-            "上游响应超过 2.8 秒，排队严重。系统批准摸鱼，去打把游戏吧！".to_string(),
+            "严重拥堵 · 摸鱼待机".to_string(),
+            "上游处理超过 2.8 秒，排队迟缓严重，建议适度放松休息。".to_string(),
         )
     }
 }
@@ -528,3 +528,53 @@ pub async fn probe_all_models_speed() -> Result<Vec<SpeedProbeResult>, String> {
 
     Ok(results)
 }
+
+/// 直接从数据库/监控日志提取最近 1 条真实业务请求，直接换算速度与摸鱼指数 (解决明明在使用却显示待机空闲问题)
+pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, String> {
+    let logs = crate::modules::proxy_db::get_logs_summary(10, 0)?;
+    for log in logs {
+        if log.url.contains("health") || log.url.contains("event_logging") {
+            continue;
+        }
+        if log.duration > 0 {
+            let model = log.model.unwrap_or_else(|| "unknown".to_string());
+            let status = log.status;
+            let duration_ms = log.duration;
+            let output_tokens = log.output_tokens.unwrap_or(0);
+            let account_email = log.account_email.unwrap_or_default();
+            let timestamp_secs = log.timestamp / 1000;
+
+            let ttft_ms = duration_ms;
+            let gen_secs = (duration_ms as f64 / 1000.0).max(0.1);
+            let tps = if output_tokens > 0 {
+                ((output_tokens as f64 / gen_secs) * 10.0).round() / 10.0
+            } else {
+                ((1000.0 / duration_ms as f64) * 28.0 * 10.0).round() / 10.0
+            };
+
+            let success = status >= 200 && status < 400;
+            let (slack_level, slack_score, slack_title, slack_advice) =
+                calculate_slack_metrics(success, ttft_ms, log.error.as_deref());
+
+            return Ok(Some(SpeedProbeResult {
+                model: model.clone(),
+                display_name: model,
+                account_email,
+                success,
+                status_code: status,
+                ttft_ms,
+                total_duration_ms: duration_ms,
+                output_tokens,
+                tps: tps.min(120.0).max(1.0),
+                slack_level,
+                slack_score,
+                slack_title,
+                slack_advice,
+                error_msg: log.error,
+                timestamp: timestamp_secs,
+            }));
+        }
+    }
+    Ok(None)
+}
+
