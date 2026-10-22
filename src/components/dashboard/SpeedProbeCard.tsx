@@ -176,7 +176,7 @@ export function SpeedProbeCard() {
                     <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-bold text-gray-900 dark:text-zinc-100 truncate">
-                                {isStale ? '⏳ 待机空闲中 · 建议测速探活' : result?.slack_title || '探测服务状态中...'}
+                                {isStale ? '待机空闲 · 建议测速探活' : result?.slack_title || '探测服务状态中...'}
                             </span>
                             <span className={`text-[10px] px-2 py-0.2 rounded-full font-mono font-bold border shrink-0 ${theme.badgeBg}`}>
                                 摸鱼指数 {isStale ? '—' : `${result?.slack_score ?? 0}%`}
@@ -229,30 +229,28 @@ export function SpeedProbeCard() {
                         </div>
                     </div>
 
-                    {/* 唯一主力模型胶囊 (按使用量排序第一，支持微下拉切换) */}
-                    <div className="flex items-center bg-gray-100 dark:bg-white/[0.05] pl-2 pr-1.5 py-1 rounded-xl border border-gray-200/60 dark:border-white/[0.08] text-xs font-mono">
-                        <span className="text-[10px] text-gray-400 mr-1.5 font-sans font-medium">🎯 主力:</span>
-                        <span className="text-indigo-600 dark:text-cyan-300 font-bold max-w-[140px] truncate mr-1" title={selectedModel}>
-                            {selectedModel}
-                        </span>
-
-                        {dynamicTargets.length > 1 && (
-                            <select
-                                value={selectedModel}
-                                onChange={(e) => {
-                                    setSelectedModel(e.target.value);
-                                    handleProbe(e.target.value);
-                                }}
-                                className="bg-transparent text-[10px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white outline-none cursor-pointer pr-0.5"
-                                title="按真实使用量切换模型"
-                            >
-                                {dynamicTargets.slice(0, 8).map((t, idx) => (
-                                    <option key={t.id} value={t.id} className="dark:bg-[#15161b]">
-                                        {idx === 0 ? `★ ${t.name} (用量第一)` : t.name}
+                    {/* 纯正主力模型选择胶囊 (单一下拉控件，杜绝文字重复叠放) */}
+                    <div className="flex items-center bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200/60 dark:hover:bg-white/[0.1] px-2 py-1 rounded-xl border border-gray-200/70 dark:border-white/[0.1] text-xs font-mono transition-all">
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mr-1.5 shrink-0 animate-pulse" />
+                        <select
+                            value={selectedModel}
+                            onChange={(e) => {
+                                setSelectedModel(e.target.value);
+                                handleProbe(e.target.value);
+                            }}
+                            className="bg-transparent text-xs font-bold text-gray-800 dark:text-cyan-300 outline-none cursor-pointer pr-1 max-w-[190px]"
+                            title="按真实使用量切换探测模型"
+                        >
+                            {dynamicTargets.length > 0 ? (
+                                dynamicTargets.slice(0, 8).map((t, idx) => (
+                                    <option key={t.id} value={t.id} className="dark:bg-[#15161b] text-gray-900 dark:text-white font-normal">
+                                        {idx === 0 ? `${t.id} (主力)` : t.id}
                                     </option>
-                                ))}
-                            </select>
-                        )}
+                                ))
+                            ) : (
+                                <option value={selectedModel} className="dark:bg-[#15161b]">{selectedModel}</option>
+                            )}
+                        </select>
                     </div>
 
                     {/* 测速动作按钮 */}

@@ -99,6 +99,56 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
         }
     }, [modelShareItems]);
 
+    // 车速表指针动态平滑弹射动效 (60FPS 三角函数绝对锚定，彻底解决指针脱离中心与指错位置问题)
+    const [animatedRate, setAnimatedRate] = useState<number>(0);
+    useEffect(() => {
+        let current = 0;
+        const target = Math.min(100, Math.max(0, cacheMetrics.hitRate));
+        let frameId: number;
+        const animate = () => {
+            current += (target - current) * 0.16;
+            if (Math.abs(target - current) < 0.15) {
+                setAnimatedRate(target);
+            } else {
+                setAnimatedRate(current);
+                frameId = requestAnimationFrame(animate);
+            }
+        };
+        frameId = requestAnimationFrame(animate);
+        return () => cancelAnimationFrame(frameId);
+    }, [cacheMetrics.hitRate]);
+
+    const needleAngleRad = useMemo(() => {
+        return Math.PI + (animatedRate / 100) * Math.PI;
+    }, [animatedRate]);
+
+    const needleCoords = useMemo(() => {
+        const cx = 110;
+        const cy = 92;
+        const len = 64;
+        const tailLen = 12;
+        const halfWidth = 2.6;
+
+        const tipX = cx + len * Math.cos(needleAngleRad);
+        const tipY = cy + len * Math.sin(needleAngleRad);
+        const tailX = cx - tailLen * Math.cos(needleAngleRad);
+        const tailY = cy - tailLen * Math.sin(needleAngleRad);
+
+        const perpX = -Math.sin(needleAngleRad) * halfWidth;
+        const perpY = Math.cos(needleAngleRad) * halfWidth;
+
+        const p1X = cx + perpX;
+        const p1Y = cy + perpY;
+        const p2X = cx - perpX;
+        const p2Y = cy - perpY;
+
+        return {
+            tipX,
+            tipY,
+            points: `${tipX},${tipY} ${p1X},${p1Y} ${tailX},${tailY} ${p2X},${p2Y}`,
+        };
+    }, [needleAngleRad]);
+
     // 核心优化：除初次探测外，后续监听真实网关调用日志，零开销自动实时同步速度与码表指针
     useEffect(() => {
         if (!isTauri()) return;
@@ -863,7 +913,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         strokeDasharray="226.2"
                                         initial={{ strokeDashoffset: 226.2 }}
                                         animate={{
-                                            strokeDashoffset: 226.2 * (1 - Math.min(100, Math.max(0, cacheMetrics.hitRate)) / 100),
+                                            strokeDashoffset: 226.2 * (1 - Math.min(100, Math.max(0, animatedRate)) / 100),
                                         }}
                                         transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
                                         filter="url(#glowNeedle)"
@@ -903,40 +953,28 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                     <text x="110" y="24" textAnchor="middle" className="text-[9px] font-mono font-bold fill-gray-400 dark:fill-zinc-500">50</text>
                                     <text x="188" y="103" textAnchor="middle" className="text-[9px] font-mono font-bold fill-gray-400 dark:fill-zinc-500">100</text>
 
-                                    {/* 5. 真实跑车机械运动指针 (Framer Motion 真实弹簧动效，踩油门弹射自检！) */}
-                                    <motion.g
-                                        initial={{ rotate: -90 }}
-                                        animate={{
-                                            rotate: -90 + (Math.min(100, Math.max(0, cacheMetrics.hitRate)) / 100) * 180,
-                                        }}
-                                        transition={{
-                                            type: 'spring',
-                                            damping: 12,
-                                            stiffness: 85,
-                                            restDelta: 0.1,
-                                        }}
-                                        style={{ transformOrigin: '110px 92px' }}
-                                    >
+                                    {/* 5. 真实跑车机械运动指针 (三角函数绝对锚定圆心，针尾牢牢锁死在中心，针尖精准指向刻度) */}
+                                    <g>
                                         {/* 指针发光阴影 */}
                                         <line
                                             x1="110"
                                             y1="92"
-                                            x2="110"
-                                            y2="28"
+                                            x2={needleCoords.tipX}
+                                            y2={needleCoords.tipY}
                                             stroke="#f43f5e"
                                             strokeWidth="3.5"
                                             strokeLinecap="round"
                                             opacity="0.4"
-                                            filter="url(#glowNeedle)"
+                                            filter="url(#speedoGlow)"
                                         />
-                                        {/* 跑车锋利双层机械指针本体 (贯穿圆心，带配重尾，彻底告别断截悬空) */}
+                                        {/* 跑车锋利机械指针本体 (贯穿圆心，带配重尾翼) */}
                                         <polygon
-                                            points="108.5,98 111.5,98 110.6,26 109.4,26"
-                                            fill="url(#needleGrad)"
+                                            points={needleCoords.points}
+                                            fill="url(#speedoNeedleGrad)"
                                         />
                                         {/* 白热针尖微亮珠 */}
-                                        <circle cx="110" cy="25" r="1.5" fill="#ffffff" />
-                                    </motion.g>
+                                        <circle cx={needleCoords.tipX} cy={needleCoords.tipY} r="1.6" fill="#ffffff" />
+                                    </g>
 
                                     {/* 6. 高精度合金轮毂轴承盖 (Pivot Hub) - 牢牢包裹指针根部 */}
                                     <circle
