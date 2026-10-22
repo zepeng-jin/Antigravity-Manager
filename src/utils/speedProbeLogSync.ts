@@ -1,3 +1,25 @@
+export interface OneMinuteLoadMetrics {
+    window_seconds: number;
+    request_count: number;
+    success_count: number;
+    rate_limit_count: number;
+    error_count: number;
+    model: string;
+    display_name: string;
+    avg_ttft_ms: number;
+    avg_duration_ms: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    tps: number;
+    slack_level: 'sprint' | 'smooth' | 'tea' | 'slack' | 'idle';
+    slack_score: number;
+    slack_title: string;
+    slack_advice: string;
+    is_idle: boolean;
+    last_active_timestamp: number;
+    timestamp: number;
+}
+
 export interface RealtimeSpeedMetrics {
     model: string;
     display_name: string;
@@ -36,11 +58,11 @@ export function formatTimeAgo(ts?: number): string {
     return `${Math.floor(diff / 86400)}天前`;
 }
 
-/// 检查数据是否过期 (超过 20 分钟未更新视为待机)
+/// 检查数据是否过期 (超过 60 秒未更新在 1 分钟负载体系中视为平稳待机)
 export function isMetricsStale(ts?: number): boolean {
     if (!ts || ts <= 0) return true;
     const now = Math.floor(Date.now() / 1000);
-    return (now - ts) > 1200; // 20 分钟
+    return (now - ts) > 60; // 60 秒窗口
 }
 
 export function computeSlackStatus(
@@ -50,15 +72,18 @@ export function computeSlackStatus(
     inputTokens: number = 0,
     modelName: string = 'gemini-3.8-flash-high',
     accountEmail: string = '',
-    isLiveLog: boolean = false
+    isLiveLog: boolean = false,
+    rawTtftMs?: number,
+    rawStreamMs?: number
 ): RealtimeSpeedMetrics {
     const validDuration = Math.max(50, durationMs);
     const success = status >= 200 && status < 400;
-    const ttft_ms = validDuration;
+    const ttft_ms = rawTtftMs && rawTtftMs > 0 ? Math.min(rawTtftMs, validDuration) : validDuration;
     const total_duration_ms = validDuration;
 
-    // 科学估算真实 TPS (生成速度)
-    const gen_secs = (validDuration / 1000) || 0.1;
+    // 科学估算真实 TPS (根据生成流耗时，杜绝将十几万token的 prompt prefill 计入生成时间)
+    const streamMs = rawStreamMs && rawStreamMs > 0 ? rawStreamMs : Math.max(50, validDuration - ttft_ms);
+    const gen_secs = (streamMs / 1000) || 0.1;
     const tps = outputTokens > 0
         ? Number(((outputTokens / gen_secs) * 10 / 10).toFixed(1))
         : Number(((1000 / validDuration) * 28).toFixed(1));

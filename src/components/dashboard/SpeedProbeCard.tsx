@@ -1,17 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
-import {
-    RefreshCw,
-} from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { request as invoke } from '../../utils/request';
 import { listen } from '@tauri-apps/api/event';
 import { isTauri } from '../../utils/env';
 import {
-    computeSlackStatus,
     formatDurationMs,
     formatTimeAgo,
-    isMetricsStale,
-    RealtimeSpeedMetrics,
+    OneMinuteLoadMetrics,
 } from '../../utils/speedProbeLogSync';
 import { FishMoyuIcon } from './FishMoyuIcon';
 
@@ -22,13 +18,13 @@ export interface ProbeModelInfo {
     source: string;
 }
 
-const LOCAL_STORAGE_KEY = 'antigravity_last_speed_probe_result';
+const LOCAL_STORAGE_KEY = 'antigravity_last_rolling_load_result';
 
 export function SpeedProbeCard() {
     const [dynamicTargets, setDynamicTargets] = useState<ProbeModelInfo[]>([]);
     const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash-high');
     const [loading, setLoading] = useState<boolean>(false);
-    const [result, setResult] = useState<RealtimeSpeedMetrics | null>(() => {
+    const [metrics, setMetrics] = useState<OneMinuteLoadMetrics | null>(() => {
         try {
             const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
             if (saved) return JSON.parse(saved);
@@ -36,79 +32,77 @@ export function SpeedProbeCard() {
         return null;
     });
 
+    const isInitialMounted = useRef(false);
+
     // 动态拉取当前系统按实际使用量降序排列的模型列表
     useEffect(() => {
         invoke<ProbeModelInfo[]>('get_probe_model_targets')
             .then((targets) => {
                 if (targets && targets.length > 0) {
                     setDynamicTargets(targets);
-                    // 默认锁定在真实使用量 No.1 的主力模型上
-                    setSelectedModel(targets[0].id);
+                    if (!isInitialMounted.current) {
+                        isInitialMounted.current = true;
+                        setSelectedModel(targets[0].id);
+                    }
                 }
             })
             .catch((e) => console.error('[SpeedProbe] Failed to fetch models:', e));
     }, []);
 
+    // 核心函数：拉取前 1 分钟滑动负载窗口统计指标 (彻底解决单次瞬时请求导致页面跳变抖动)
+    const fetchRollingLoad = useCallback(async (targetModel?: string) => {
+        try {
+            const modelToUse = (targetModel || selectedModel).trim();
+            const res = await invoke<OneMinuteLoadMetrics>('get_one_minute_load', {
+                model: modelToUse || null,
+            });
+            if (res) {
+                setMetrics(res);
+                if (res.model && !targetModel) {
+                    setSelectedModel(res.model);
+                }
+                try {
+                    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(res));
+                } catch (e) {}
+            }
+        } catch (err) {
+            console.debug('[SpeedProbe] Failed to fetch rolling load:', err);
+        }
+    }, [selectedModel]);
+
+    // 主动即刻测速
     const handleProbe = useCallback(async (modelId?: string) => {
         const targetModel = (modelId || selectedModel).trim();
         setLoading(true);
         try {
-            const probeRes = await invoke<RealtimeSpeedMetrics>('run_speed_probe', {
+            await invoke('run_speed_probe', {
                 model: targetModel,
                 accountEmail: null,
             });
-            setResult(probeRes);
-            try {
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(probeRes));
-            } catch (e) {}
+            // 测速完成后立即刷新 1 分钟负载
+            await fetchRollingLoad(targetModel);
         } catch (error: any) {
-            console.error('[SpeedProbe] Failed:', error);
-            const fallback: RealtimeSpeedMetrics = {
-                model: targetModel,
-                display_name: targetModel,
-                account_email: '',
-                success: false,
-                status_code: 500,
-                ttft_ms: 9999,
-                total_duration_ms: 9999,
-                output_tokens: 0,
-                input_tokens: 0,
-                tps: 0,
-                slack_level: 'slack',
-                slack_score: 100,
-                slack_title: '探针调用受阻 · 检查网络',
-                slack_advice: typeof error === 'string' ? error : '上游网络超时或无可用在线账号，请稍后重试。',
-                is_live_log: false,
-                timestamp: Math.floor(Date.now() / 1000),
-            };
-            setResult(fallback);
+            console.error('[SpeedProbe] Probe failed:', error);
+            await fetchRollingLoad(targetModel);
         } finally {
             setLoading(false);
         }
-    }, [selectedModel]);
+    }, [selectedModel, fetchRollingLoad]);
 
-    // 核心优化 1：初次载入时，优先从真实网关日志拉取最近 1 次业务请求的速度 (解决明明在使用却显示3小时前空闲的Bug)
+    // 核心优化 1：初次载入立即刷新前 1 分钟负载
     useEffect(() => {
-        invoke<RealtimeSpeedMetrics | null>('get_latest_real_speed')
-            .then((latest) => {
-                if (latest) {
-                    setResult(latest);
-                    if (latest.model) {
-                        setSelectedModel(latest.model);
-                    }
-                    try {
-                        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(latest));
-                    } catch (e) {}
-                } else if (!result) {
-                    handleProbe('gemini-3.8-flash-high');
-                }
-            })
-            .catch(() => {
-                if (!result) handleProbe('gemini-3.8-flash-high');
-            });
-    }, []);
+        fetchRollingLoad();
+    }, [fetchRollingLoad]);
 
-    // 核心优化 2：持续监听真实代理请求日志，全自动实时零开销刷新速度与摸鱼指数
+    // 核心优化 2：每 4 秒自动滑动更新 1 分钟窗口 (请求停止后自动无缝归于待机状态)
+    useEffect(() => {
+        const intervalId = setInterval(() => {
+            fetchRollingLoad();
+        }, 4000);
+        return () => clearInterval(intervalId);
+    }, [fetchRollingLoad]);
+
+    // 核心优化 3：持续监听真实代理请求日志，每当有请求完成即刻触发 1 分钟窗口聚合重算
     useEffect(() => {
         if (!isTauri()) return;
         let unlistenFn: (() => void) | null = null;
@@ -116,34 +110,15 @@ export function SpeedProbeCard() {
             try {
                 unlistenFn = await listen<any>('proxy://request', (event) => {
                     const log = event.payload;
-                    // 过滤非业务假请求与极短本地回环 (< 40ms)
-                    if (!log || typeof log.duration !== 'number' || log.duration < 40) return;
-                    const reqModel = log.model || selectedModel;
-                    const status = log.status || 200;
-                    const outputTokens = log.output_tokens || 0;
-                    const inputTokens = log.input_tokens || 0;
-
-                    // 自动同步当前主力模型为真实触发请求的模型
+                    if (!log || typeof log.duration !== 'number') return;
                     if (log.model) {
                         setSelectedModel(log.model);
                     }
-
-                    const liveMetrics = computeSlackStatus(
-                        log.duration,
-                        status,
-                        outputTokens,
-                        inputTokens,
-                        reqModel,
-                        log.account_email || '',
-                        true
-                    );
-                    setResult(liveMetrics);
-                    try {
-                        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(liveMetrics));
-                    } catch (e) {}
+                    // 真实请求到达，立即重算滑动窗口
+                    fetchRollingLoad(log.model);
                 });
             } catch (e) {
-                console.debug('[SpeedProbe] Live log listener setup skipped:', e);
+                console.debug('[SpeedProbe] Live log listener skipped:', e);
             }
         };
 
@@ -151,12 +126,18 @@ export function SpeedProbeCard() {
         return () => {
             if (unlistenFn) unlistenFn();
         };
-    }, [selectedModel]);
+    }, [fetchRollingLoad]);
 
-    // 判断时效性：若超过 20 分钟没有真实日志，自动显示为待机并提示更新时间
-    const isStale = isMetricsStale(result?.timestamp);
+    const isIdle = !metrics || metrics.is_idle;
 
-    const getSlackTheme = (level?: string) => {
+    const getSlackTheme = (level?: string, idle?: boolean) => {
+        if (idle) {
+            return {
+                badgeBg: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 border-zinc-500/20',
+                progressColor: 'from-zinc-400 to-zinc-500',
+                textColor: 'text-zinc-500 dark:text-zinc-400',
+            };
+        }
         switch (level) {
             case 'sprint':
                 return {
@@ -186,26 +167,37 @@ export function SpeedProbeCard() {
         }
     };
 
-    const theme = getSlackTheme(result?.slack_level);
+    const theme = getSlackTheme(metrics?.slack_level, isIdle);
 
     return (
         <div className="bg-white/95 dark:bg-[#15161b] rounded-2xl px-4 py-2.5 shadow-sm dark:shadow-lg dark:shadow-black/30 border border-gray-150 dark:border-white/[0.08] relative overflow-hidden transition-all">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                {/* 左翼：摸鱼小鱼 + 状态标语 + 摸鱼指数 */}
+                {/* 左翼：摸鱼小鱼 + 状态标语 + 摸鱼指数 + 1分钟负载吞吐 */}
                 <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     {/* 灵动摸鱼小鱼 (摇尾巴吐泡泡) */}
-                    <FishMoyuIcon level={result?.slack_level} className="w-6 h-6 shrink-0" />
+                    <FishMoyuIcon level={isIdle ? 'idle' : metrics?.slack_level} className="w-6 h-6 shrink-0" />
 
                     <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                             <span className="text-xs font-bold text-gray-900 dark:text-zinc-100 truncate">
-                                {isStale ? '待机空闲 · 建议测速探活' : result?.slack_title || '探测服务状态中...'}
+                                {metrics?.slack_title || '前1分钟服务负载计算中...'}
                             </span>
+
+                            {/* 摸鱼指数胶囊 */}
                             <span className={`text-[10px] px-2 py-0.2 rounded-full font-mono font-bold border shrink-0 ${theme.badgeBg}`}>
-                                摸鱼指数 {isStale ? '—' : `${result?.slack_score ?? 0}%`}
+                                {isIdle ? '待机空闲' : `摸鱼指数 ${metrics?.slack_score ?? 0}%`}
                             </span>
+
+                            {/* 1分钟请求频次 RPM 标识 */}
+                            {metrics && metrics.request_count > 0 && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded-md font-mono bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20 shrink-0">
+                                    {metrics.request_count} req/min
+                                </span>
+                            )}
+
+                            {/* 状态时效 */}
                             <span className="text-[10px] text-gray-400 dark:text-zinc-500 font-mono shrink-0">
-                                {formatTimeAgo(result?.timestamp)}
+                                {isIdle ? (metrics?.last_active_timestamp ? formatTimeAgo(metrics.last_active_timestamp) : '待命中') : '近1分钟'}
                             </span>
                         </div>
 
@@ -214,45 +206,45 @@ export function SpeedProbeCard() {
                             <div className="w-24 sm:w-32 bg-gray-100 dark:bg-white/[0.08] h-1.5 rounded-full overflow-hidden shrink-0">
                                 <motion.div
                                     initial={{ width: 0 }}
-                                    animate={{ width: isStale ? '0%' : `${result?.slack_score ?? 0}%` }}
+                                    animate={{ width: isIdle ? '0%' : `${metrics?.slack_score ?? 0}%` }}
                                     transition={{ duration: 0.5, ease: 'easeOut' }}
                                     className={`h-full bg-gradient-to-r ${theme.progressColor}`}
                                 />
                             </div>
                             <span className="text-[11px] text-gray-500 dark:text-zinc-400 truncate font-sans">
-                                {isStale ? '超过20分钟未产生新请求，点击即刻测速获取最新上游延迟。' : result?.slack_advice}
+                                {metrics?.slack_advice || '持续监测上游接口服务负载与排队状况。'}
                             </span>
                         </div>
                     </div>
                 </div>
 
-                {/* 右翼：三大数字指标 + 唯一主力模型胶囊 + 测速按钮 */}
+                {/* 右翼：三大真实数字指标 + 唯一主力模型胶囊 + 测速按钮 */}
                 <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-center">
-                    {/* 三大极简紧凑数字指标 */}
+                    {/* 三大极简紧凑数字指标 (前1分钟平均真实首字、真实生成速率、真实平均链路) */}
                     <div className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-gray-50 dark:bg-white/[0.04] border border-gray-150 dark:border-white/[0.06] text-center font-mono">
                         <div>
                             <div className="text-[9px] text-gray-400 dark:text-zinc-500 leading-none">首字</div>
                             <div className={`text-xs font-bold leading-tight mt-0.5 ${theme.textColor}`}>
-                                {loading ? '...' : isStale ? '—' : result?.success ? formatDurationMs(result.ttft_ms) : '失败'}
+                                {loading ? '...' : isIdle ? '—' : formatDurationMs(metrics?.avg_ttft_ms)}
                             </div>
                         </div>
                         <div className="w-px h-5 bg-gray-200 dark:bg-white/[0.08]" />
                         <div>
                             <div className="text-[9px] text-gray-400 dark:text-zinc-500 leading-none">速率</div>
                             <div className="text-xs font-bold leading-tight text-gray-800 dark:text-zinc-200 mt-0.5">
-                                {loading ? '...' : isStale ? '—' : result?.success ? `${result.tps}` : '0'}
+                                {loading ? '...' : isIdle ? '0.0' : `${metrics?.tps ?? 0}`}
                             </div>
                         </div>
                         <div className="w-px h-5 bg-gray-200 dark:bg-white/[0.08]" />
                         <div>
                             <div className="text-[9px] text-gray-400 dark:text-zinc-500 leading-none">链路</div>
                             <div className="text-xs font-bold leading-tight text-gray-800 dark:text-zinc-200 mt-0.5">
-                                {loading ? '...' : isStale ? '—' : result?.success ? formatDurationMs(result.total_duration_ms) : '异常'}
+                                {loading ? '...' : isIdle ? '—' : formatDurationMs(metrics?.avg_duration_ms)}
                             </div>
                         </div>
                     </div>
 
-                    {/* 纯正主力模型选择胶囊 (单一下拉控件，杜绝文字重复叠放) */}
+                    {/* 纯正主力模型选择胶囊 */}
                     <div className="flex items-center bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200/60 dark:hover:bg-white/[0.1] px-2 py-1 rounded-xl border border-gray-200/70 dark:border-white/[0.1] text-xs font-mono transition-all">
                         <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mr-1.5 shrink-0 animate-pulse" />
                         <select

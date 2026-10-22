@@ -1578,6 +1578,13 @@ pub fn get_latest_real_speed() -> Result<Option<crate::modules::speed_probe::Spe
 }
 
 #[tauri::command]
+pub fn get_one_minute_load(
+    model: Option<String>,
+) -> Result<crate::modules::speed_probe::OneMinuteLoadMetrics, String> {
+    crate::modules::speed_probe::get_one_minute_rolling_load(model.as_deref())
+}
+
+#[tauri::command]
 pub async fn query_transit_info(url: String, key: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))

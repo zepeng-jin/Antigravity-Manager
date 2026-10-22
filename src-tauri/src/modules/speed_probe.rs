@@ -1,4 +1,5 @@
 use futures::StreamExt;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Instant;
@@ -544,7 +545,31 @@ pub async fn probe_all_models_speed() -> Result<Vec<SpeedProbeResult>, String> {
     Ok(results)
 }
 
-/// 直接从数据库/监控日志提取最近 1 条真实业务请求，直接换算速度与摸鱼指数 (解决明明在使用却显示待机空闲问题)
+/// 过去 1 分钟滑动负载窗口统计指标
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OneMinuteLoadMetrics {
+    pub window_seconds: u32,
+    pub request_count: u32,
+    pub success_count: u32,
+    pub rate_limit_count: u32,
+    pub error_count: u32,
+    pub model: String,
+    pub display_name: String,
+    pub avg_ttft_ms: u64,
+    pub avg_duration_ms: u64,
+    pub total_input_tokens: u32,
+    pub total_output_tokens: u32,
+    pub tps: f64,
+    pub slack_level: String,
+    pub slack_score: u32,
+    pub slack_title: String,
+    pub slack_advice: String,
+    pub is_idle: bool,
+    pub last_active_timestamp: i64,
+    pub timestamp: i64,
+}
+
+/// 直接从数据库/监控日志提取最近 1 条真实业务请求，换算精准 TTFT、TPS 与摸鱼指数
 pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, String> {
     let logs = crate::modules::proxy_db::get_logs_summary(10, 0)?;
     for log in logs {
@@ -560,12 +585,36 @@ pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, Strin
             let account_email = log.account_email.unwrap_or_default();
             let timestamp_secs = log.timestamp / 1000;
 
-            let ttft_ms = duration_ms;
-            let gen_secs = (duration_ms as f64 / 1000.0).max(0.1);
+            let mut parsed_ttft = log.ttft;
+            let mut parsed_stream = None;
+            if let Some(ref h_str) = log.response_headers {
+                if let Ok(val) = serde_json::from_str::<Value>(h_str) {
+                    if parsed_ttft.is_none() {
+                        if let Some(t) = val
+                            .get("x-timing-ttft-ms")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok())
+                        {
+                            parsed_ttft = Some(t.round() as u64);
+                        }
+                    }
+                    if let Some(s) = val
+                        .get("x-timing-stream-ms")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        parsed_stream = Some(s);
+                    }
+                }
+            }
+
+            let ttft_ms = parsed_ttft.unwrap_or(duration_ms);
+            let stream_ms = parsed_stream.unwrap_or_else(|| duration_ms.saturating_sub(ttft_ms) as f64);
+            let gen_secs = (stream_ms / 1000.0).max(0.05);
             let tps = if output_tokens > 0 {
                 ((output_tokens as f64 / gen_secs) * 10.0).round() / 10.0
             } else {
-                ((1000.0 / duration_ms as f64) * 28.0 * 10.0).round() / 10.0
+                ((1000.0 / ttft_ms.max(50) as f64) * 28.0 * 10.0).round() / 10.0
             };
 
             let success = status >= 200 && status < 400;
@@ -581,7 +630,7 @@ pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, Strin
                 ttft_ms,
                 total_duration_ms: duration_ms,
                 output_tokens,
-                tps: tps.min(120.0).max(1.0),
+                tps: tps.min(250.0).max(1.0),
                 slack_level,
                 slack_score,
                 slack_title,
@@ -592,5 +641,245 @@ pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, Strin
         }
     }
     Ok(None)
+}
+
+/// 核心：计算前 1 分钟滑动负载窗口统计指标 (解决单次瞬时请求跳变、缺乏全局负载表征的问题)
+pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinuteLoadMetrics, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let one_min_ago = now_ms - 60_000;
+    let now_secs = now_ms / 1000;
+
+    let conn = crate::modules::proxy_db::connect_db()?;
+
+    // 1. 查询过去 60 秒内的所有真实业务请求 (按时间倒序)
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, timestamp, status, duration, model, input_tokens, output_tokens, error, response_headers
+             FROM request_logs
+             WHERE timestamp >= ?1 AND url NOT LIKE '%health%' AND url NOT LIKE '%event_logging%'
+             ORDER BY timestamp DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    struct RecentRow {
+        status: u16,
+        duration: u64,
+        model: Option<String>,
+        input_tokens: u32,
+        output_tokens: u32,
+        error: Option<String>,
+        ttft_ms: u64,
+        stream_ms: f64,
+    }
+
+    let rows_iter = stmt
+        .query_map([one_min_ago], |row| {
+            let status: u16 = row.get(2)?;
+            let duration: u64 = row.get(3)?;
+            let model: Option<String> = row.get(4)?;
+            let input_tokens: u32 = row.get::<_, Option<u32>>(5)?.unwrap_or(0);
+            let output_tokens: u32 = row.get::<_, Option<u32>>(6)?.unwrap_or(0);
+            let error: Option<String> = row.get(7)?;
+            let resp_headers_str: Option<String> = row.get(8)?;
+
+            let mut parsed_ttft = None;
+            let mut parsed_stream = None;
+            if let Some(ref h_str) = resp_headers_str {
+                if let Ok(val) = serde_json::from_str::<Value>(h_str) {
+                    if let Some(t) = val
+                        .get("x-timing-ttft-ms")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        parsed_ttft = Some(t.round() as u64);
+                    }
+                    if let Some(s) = val
+                        .get("x-timing-stream-ms")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<f64>().ok())
+                    {
+                        parsed_stream = Some(s);
+                    }
+                }
+            }
+
+            let ttft_ms = parsed_ttft.unwrap_or(duration);
+            let stream_ms = parsed_stream.unwrap_or_else(|| duration.saturating_sub(ttft_ms) as f64);
+
+            Ok(RecentRow {
+                status,
+                duration,
+                model,
+                input_tokens,
+                output_tokens,
+                error,
+                ttft_ms,
+                stream_ms,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut recent_requests = Vec::new();
+    for r in rows_iter {
+        recent_requests.push(r.map_err(|e| e.to_string())?);
+    }
+
+    // 2. 查询最近一次历史请求的时间和模型（当近 1 分钟无请求时提供参考）
+    let last_active: Option<(i64, Option<String>)> = conn
+        .query_row(
+            "SELECT timestamp, model FROM request_logs WHERE url NOT LIKE '%health%' AND url NOT LIKE '%event_logging%' ORDER BY timestamp DESC LIMIT 1",
+            [],
+            |row| {
+                let ts: i64 = row.get(0)?;
+                let m: Option<String> = row.get(1)?;
+                Ok((ts / 1000, m))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let (last_active_ts, last_model) = last_active.unwrap_or((0, None));
+
+    let default_model = "gemini-3.8-flash-high".to_string();
+    let selected_model = target_model
+        .map(|s| s.to_string())
+        .or_else(|| recent_requests.first().and_then(|r| r.model.clone()))
+        .or(last_model)
+        .unwrap_or(default_model);
+
+    let display_name = selected_model.clone();
+    let req_count = recent_requests.len() as u32;
+
+    if req_count == 0 {
+        return Ok(OneMinuteLoadMetrics {
+            window_seconds: 60,
+            request_count: 0,
+            success_count: 0,
+            rate_limit_count: 0,
+            error_count: 0,
+            model: selected_model,
+            display_name,
+            avg_ttft_ms: 0,
+            avg_duration_ms: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            tps: 0.0,
+            slack_level: "idle".to_string(),
+            slack_score: 0,
+            slack_title: "近1分钟待机 · 系统就绪".to_string(),
+            slack_advice: "最近 1 分钟无上游调用负载，通道就绪，可随时开启工作或点击即刻测速。".to_string(),
+            is_idle: true,
+            last_active_timestamp: last_active_ts,
+            timestamp: now_secs,
+        });
+    }
+
+    let mut success_count = 0;
+    let mut rate_limit_count = 0;
+    let mut error_count = 0;
+    let mut sum_ttft: u64 = 0;
+    let mut sum_duration: u64 = 0;
+    let mut total_input: u32 = 0;
+    let mut total_output: u32 = 0;
+    let mut total_stream_ms: f64 = 0.0;
+
+    for r in &recent_requests {
+        if r.status >= 200 && r.status < 400 {
+            success_count += 1;
+        } else if r.status == 429 {
+            rate_limit_count += 1;
+        } else {
+            error_count += 1;
+        }
+        sum_ttft += r.ttft_ms;
+        sum_duration += r.duration;
+        total_input += r.input_tokens;
+        total_output += r.output_tokens;
+        total_stream_ms += r.stream_ms;
+    }
+
+    let avg_ttft = sum_ttft / req_count as u64;
+    let avg_duration = sum_duration / req_count as u64;
+
+    let gen_secs = (total_stream_ms / 1000.0).max(0.1);
+    let tps = if total_output > 0 {
+        ((total_output as f64 / gen_secs) * 10.0).round() / 10.0
+    } else {
+        ((1000.0 / avg_ttft.max(50) as f64) * 28.0 * 10.0).round() / 10.0
+    };
+
+    let (slack_level, slack_score, slack_title, slack_advice) = if rate_limit_count > 0 {
+        (
+            "slack".to_string(),
+            100,
+            format!("前1分钟触发限流 · 出现 {} 次429", rate_limit_count),
+            "近 1 分钟检测到上游配额耗尽或并发过载排队，官方接口受限，建议离线休息片刻。".to_string(),
+        )
+    } else if error_count > 0 && success_count == 0 {
+        (
+            "slack".to_string(),
+            95,
+            "前1分钟服务波动 · 请求失败".to_string(),
+            "近 1 分钟上游接口无成功响应，网络或服务暂时不可用，建议检查网络或稍后重试。".to_string(),
+        )
+    } else if total_input >= 20_000 && avg_ttft <= 60_000 {
+        let k_tokens = total_input / 1000;
+        let title = format!("前1分钟 {}k 吞吐 · 算力全开", k_tokens);
+        let advice = format!(
+            "近 1 分钟完成 {} 笔请求，处理 {}k 超大规模工程上下文，GPU 吞吐极佳，链路高效稳定。",
+            req_count, k_tokens
+        );
+        ("sprint".to_string(), 10, title, advice)
+    } else if avg_ttft < 1200 {
+        (
+            "sprint".to_string(),
+            5,
+            format!("前1分钟极速响应 · {} req/min", req_count),
+            "近 1 分钟上游响应极佳，毫秒级首字吐出，建议保持专注高效产出。".to_string(),
+        )
+    } else if avg_ttft < 3000 {
+        (
+            "smooth".to_string(),
+            25,
+            format!("前1分钟平稳顺畅 · {} req/min", req_count),
+            "近 1 分钟服务延迟处于平稳区间，状态良好，推荐持续推进工作任务。".to_string(),
+        )
+    } else if avg_ttft < 6000 {
+        (
+            "tea".to_string(),
+            65,
+            format!("前1分钟排队迟缓 · {} req/min", req_count),
+            "近 1 分钟官方接口出现排队（平均首字 >3s），建议起身走走、喝口水调整节奏。".to_string(),
+        )
+    } else {
+        (
+            "slack".to_string(),
+            95,
+            format!("前1分钟严重拥堵 · {} req/min", req_count),
+            "近 1 分钟上游平均响应超过 6 秒，排队迟缓严重，建议适度放松休息。".to_string(),
+        )
+    };
+
+    Ok(OneMinuteLoadMetrics {
+        window_seconds: 60,
+        request_count: req_count,
+        success_count,
+        rate_limit_count,
+        error_count,
+        model: selected_model,
+        display_name,
+        avg_ttft_ms: avg_ttft,
+        avg_duration_ms: avg_duration,
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        tps: tps.min(250.0).max(1.0),
+        slack_level,
+        slack_score,
+        slack_title,
+        slack_advice,
+        is_idle: false,
+        last_active_timestamp: last_active_ts,
+        timestamp: now_secs,
+    })
 }
 

@@ -16,6 +16,8 @@ pub struct ProxyRequestLog {
     pub url: String,
     pub status: u16,
     pub duration: u64,                // ms
+    #[serde(default)]
+    pub ttft: Option<u64>,            // ms 首字响应延迟 (Time to First Token)
     pub model: Option<String>,        // 客户端请求的模型名
     pub mapped_model: Option<String>, // 实际路由后使用的模型名
     #[serde(default)]
@@ -193,6 +195,7 @@ impl ProxyRequestLog {
             url: self.url.clone(),
             status: self.status,
             duration: self.duration,
+            ttft: self.ttft,
             model: self.model.clone(),
             mapped_model: self.mapped_model.clone(),
             upstream_model: self.upstream_model.clone(),

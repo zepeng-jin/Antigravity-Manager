@@ -961,6 +961,7 @@ pub async fn monitor_middleware(
         url: uri,
         status,
         duration,
+        ttft: None,
         model,
         mapped_model,
         upstream_model,
@@ -993,9 +994,13 @@ pub async fn monitor_middleware(
             let stream_start = std::time::Instant::now();
             let mut all_stream_data = Vec::new();
             let mut last_few_bytes = Vec::new();
+            let mut first_token_time: Option<f64> = None;
 
             while let Some(chunk_res) = next_chunk_while_receiver_open(&mut stream, &tx).await {
                 if let Ok(chunk) = chunk_res {
+                    if !chunk.is_empty() && first_token_time.is_none() {
+                        first_token_time = Some(start_instant.elapsed().as_micros() as f64 / 1000.0);
+                    }
                     all_stream_data.extend_from_slice(&chunk);
 
                     if chunk.len() > 8192 {
@@ -1027,6 +1032,18 @@ pub async fn monitor_middleware(
                 .and_then(|h| serde_json::from_str(h).ok())
                 .unwrap_or_default();
 
+            // Extract real TTFT: prefer upstream recorded x-timing-ttft-ms, else first_token_time
+            let upstream_ttft = headers_map
+                .get("x-timing-ttft-ms")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok());
+            let real_ttft_ms = upstream_ttft.or(first_token_time).unwrap_or(total_ms);
+            log.ttft = Some(real_ttft_ms.round() as u64);
+
+            headers_map.insert(
+                "x-timing-ttft-ms".to_string(),
+                serde_json::json!(format!("{:.3}", real_ttft_ms)),
+            );
             headers_map.insert(
                 "x-timing-stream-ms".to_string(),
                 serde_json::json!(format!("{:.3}", stream_ms)),

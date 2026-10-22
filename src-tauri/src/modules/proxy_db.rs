@@ -106,7 +106,7 @@ fn apply_fast_pragmas(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn connect_db() -> Result<Connection, String> {
+pub(crate) fn connect_db() -> Result<Connection, String> {
     let db_path = get_proxy_db_path()?;
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     apply_fast_pragmas(&conn)?;
@@ -502,13 +502,25 @@ pub fn init_db() -> Result<(), String> {
 }
 
 fn map_request_log_row(row: &rusqlite::Row) -> rusqlite::Result<ProxyRequestLog> {
+    let duration: u64 = row.get(5)?;
+    let response_headers: Option<String> = row.get(22).unwrap_or(None);
+    let parsed_ttft = response_headers.as_ref().and_then(|h| {
+        serde_json::from_str::<serde_json::Value>(h).ok().and_then(|val| {
+            val.get("x-timing-ttft-ms")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|f| f.round() as u64)
+        })
+    });
+
     Ok(ProxyRequestLog {
         id: row.get(0)?,
         timestamp: row.get(1)?,
         method: row.get(2)?,
         url: row.get(3)?,
         status: row.get(4)?,
-        duration: row.get(5)?,
+        duration,
+        ttft: parsed_ttft.or(Some(duration)),
         model: row.get(6)?,
         error: row.get(7)?,
         request_body: row.get(8).unwrap_or(None),
@@ -525,7 +537,7 @@ fn map_request_log_row(row: &rusqlite::Row) -> rusqlite::Result<ProxyRequestLog>
         username: row.get(19).unwrap_or(None),
         request_headers: row.get(20).unwrap_or(None),
         upstream_request_headers: row.get(21).unwrap_or(None),
-        response_headers: row.get(22).unwrap_or(None),
+        response_headers,
         session_id: row.get(23).unwrap_or(None),
         upstream_model: row
             .get::<_, Option<String>>("upstream_model")
