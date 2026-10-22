@@ -43,8 +43,6 @@ const LOCAL_STORAGE_KEY = 'antigravity_last_speed_probe_result';
 export function SpeedProbeCard() {
     const [dynamicTargets, setDynamicTargets] = useState<ProbeModelInfo[]>([]);
     const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash-high');
-    const [customModelInput, setCustomModelInput] = useState<string>('');
-    const [showInput, setShowInput] = useState<boolean>(false);
     const [loading, setLoading] = useState<boolean>(false);
     const [result, setResult] = useState<SpeedProbeResult | null>(() => {
         try {
@@ -239,77 +237,32 @@ export function SpeedProbeCard() {
                         </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                        {/* 动态真实模型快捷药丸 (动态提取当前真实可用模型) */}
-                        <div className="flex items-center bg-gray-100 dark:bg-white/[0.04] p-0.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] text-[11px]">
-                            {dynamicTargets.slice(0, 4).map((t) => (
-                                <button
-                                    key={t.id}
-                                    type="button"
-                                    onClick={() => {
-                                        setSelectedModel(t.id);
-                                        setShowInput(false);
-                                        handleProbe(t.id);
-                                    }}
-                                    disabled={loading}
-                                    className={`px-2.5 py-1 rounded-lg font-medium transition-all cursor-pointer ${
-                                        selectedModel === t.id && !showInput
-                                            ? 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm font-bold dark:border dark:border-white/[0.12]'
-                                            : 'text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
-                                    }`}
-                                    title={`模型: ${t.id} (${t.vendor})`}
-                                >
-                                    {t.name.replace('Gemini ', '').replace('Claude ', '')}
-                                </button>
-                            ))}
+                    <div className="flex items-center gap-2">
+                        {/* 只显示一个主力模型胶囊 (严格按实际使用量 No.1 排序，支持微型切换) */}
+                        <div className="flex items-center bg-gray-100 dark:bg-white/[0.05] pl-2.5 pr-1.5 py-1 rounded-xl border border-gray-200/60 dark:border-white/[0.08] text-xs font-mono">
+                            <span className="text-[10px] text-gray-400 mr-1.5 font-sans font-medium">🎯 主力模型:</span>
+                            <span className="text-indigo-600 dark:text-cyan-300 font-bold max-w-[180px] truncate mr-1.5" title={selectedModel}>
+                                {selectedModel}
+                            </span>
 
-                            {/* 完整真实模型下拉选择 (支持自定义接口与全部官方模型) */}
-                            {dynamicTargets.length > 4 && (
+                            {/* 紧凑微型切换 (仅按用量排序前列的真实模型) */}
+                            {dynamicTargets.length > 1 && (
                                 <select
-                                    value={dynamicTargets.slice(0, 4).some(t => t.id === selectedModel) ? '' : selectedModel}
+                                    value={selectedModel}
                                     onChange={(e) => {
-                                        if (e.target.value) {
-                                            setSelectedModel(e.target.value);
-                                            setShowInput(false);
-                                            handleProbe(e.target.value);
-                                        }
+                                        setSelectedModel(e.target.value);
+                                        handleProbe(e.target.value);
                                     }}
-                                    className="bg-transparent text-[10px] text-gray-600 dark:text-zinc-300 px-1 py-1 outline-none font-mono cursor-pointer"
-                                    title="从全部真实模型与接口列表中选择"
+                                    className="bg-transparent text-[10px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white outline-none cursor-pointer pr-1"
+                                    title="切换其他真实用量模型"
                                 >
-                                    <option value="" disabled className="dark:bg-[#15161b]">更多真实模型...</option>
-                                    <optgroup label="账号实际支持模型" className="dark:bg-[#15161b]">
-                                        {dynamicTargets.filter(t => t.source === 'account').map(t => (
-                                            <option key={t.id} value={t.id}>{t.name} ({t.vendor})</option>
-                                        ))}
-                                    </optgroup>
-                                    {dynamicTargets.some(t => t.source === 'custom') && (
-                                        <optgroup label="自定义映射接口模型" className="dark:bg-[#15161b]">
-                                            {dynamicTargets.filter(t => t.source === 'custom').map(t => (
-                                                <option key={t.id} value={t.id}>{t.name}</option>
-                                            ))}
-                                        </optgroup>
-                                    )}
-                                    <optgroup label="官方支持模型" className="dark:bg-[#15161b]">
-                                        {dynamicTargets.filter(t => t.source === 'official').slice(0, 10).map(t => (
-                                            <option key={t.id} value={t.id}>{t.name} ({t.vendor})</option>
-                                        ))}
-                                    </optgroup>
+                                    {dynamicTargets.slice(0, 8).map((t, idx) => (
+                                        <option key={t.id} value={t.id} className="dark:bg-[#15161b]">
+                                            {idx === 0 ? `★ ${t.name} (主力)` : t.name}
+                                        </option>
+                                    ))}
                                 </select>
                             )}
-
-                            <button
-                                type="button"
-                                onClick={() => setShowInput(!showInput)}
-                                className={`px-2 py-1 rounded-lg font-medium transition-all cursor-pointer ${
-                                    showInput
-                                        ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-cyan-400 shadow-sm font-bold dark:border dark:border-white/[0.12]'
-                                        : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                                }`}
-                                title="手动输入其他第三方接口或未列出模型"
-                            >
-                                + 手输
-                            </button>
                         </div>
 
                         {/* 测速动作按钮 */}
@@ -317,50 +270,16 @@ export function SpeedProbeCard() {
                             type="button"
                             onClick={() => handleProbe()}
                             disabled={loading}
-                            className={`px-3 py-1 bg-indigo-50 dark:bg-indigo-500/15 hover:bg-indigo-100 dark:hover:bg-indigo-500/25 text-indigo-600 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-500/30 text-xs font-semibold rounded-xl transition-all flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer ${
+                            className={`px-3 py-1.5 bg-indigo-50 dark:bg-indigo-500/15 hover:bg-indigo-100 dark:hover:bg-indigo-500/25 text-indigo-600 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-500/30 text-xs font-semibold rounded-xl transition-all flex items-center gap-1.5 shadow-sm active:scale-95 cursor-pointer ${
                                 loading ? 'opacity-70 cursor-not-allowed' : ''
                             }`}
-                            title="探测上游延迟与输出速率"
+                            title="对主力模型执行即时链路测速"
                         >
                             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
                             <span>{loading ? '测速中...' : '即刻测速'}</span>
                         </button>
                     </div>
                 </div>
-
-                {/* 自由输入自选模型输入栏 */}
-                {showInput && (
-                    <div className="flex items-center gap-2 p-2 bg-gray-50 dark:bg-white/[0.04] rounded-xl border border-indigo-200/60 dark:border-white/[0.08] text-xs font-mono">
-                        <span className="text-gray-500 dark:text-gray-400 text-[11px] shrink-0">自选测速模型:</span>
-                        <input
-                            type="text"
-                            value={customModelInput}
-                            onChange={(e) => setCustomModelInput(e.target.value)}
-                            placeholder="如 gemini-3.8-flash-high, claude-3.8-flash..."
-                            className="flex-1 bg-white dark:bg-[#121826] border border-gray-200 dark:border-white/[0.1] rounded-lg px-2.5 py-1 text-xs text-gray-800 dark:text-white outline-none focus:border-indigo-500 dark:focus:border-cyan-400 font-mono"
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && customModelInput.trim()) {
-                                    setSelectedModel(customModelInput.trim());
-                                    handleProbe(customModelInput.trim());
-                                    setShowInput(false);
-                                }
-                            }}
-                        />
-                        <button
-                            type="button"
-                            onClick={() => {
-                                if (customModelInput.trim()) {
-                                    setSelectedModel(customModelInput.trim());
-                                    handleProbe(customModelInput.trim());
-                                    setShowInput(false);
-                                }
-                            }}
-                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs cursor-pointer shrink-0"
-                        >
-                            测试此模型
-                        </button>
-                    </div>
-                )}
 
                 {/* 核心中段：左右双核 Bento 布局 */}
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-3.5 items-center">

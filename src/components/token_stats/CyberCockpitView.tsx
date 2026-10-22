@@ -92,8 +92,6 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
     });
     const [isProbing, setIsProbing] = useState<boolean>(false);
     const [targetModel, setTargetModel] = useState<string>('gemini-3.8-flash-high');
-    const [showCustomModelInput, setShowCustomModelInput] = useState<boolean>(false);
-    const [customModelVal, setCustomModelVal] = useState<string>('');
 
     useEffect(() => {
         if (modelShareItems && modelShareItems.length > 0 && modelShareItems[0]?.model) {
@@ -434,33 +432,41 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 {t('token_stats.cockpit_dispatch_report', '用量调度全景 DISPATCH REPORT')}
                             </span>
                             <div className="flex flex-wrap items-center gap-3 text-xs font-mono text-gray-500 dark:text-gray-400">
-                                {/* 实时测速控制小胶囊 */}
-                                <div className="flex items-center gap-1.5 bg-gray-100 dark:bg-white/[0.05] px-2 py-0.5 rounded-lg border border-gray-200/70 dark:border-white/[0.08]">
-                                    <span className="text-[10px] text-gray-400">探针:</span>
-                                    <span className="text-indigo-600 dark:text-cyan-300 font-bold max-w-[120px] truncate text-[11px]" title={targetModel}>
+                                {/* 实时测速控制小胶囊 (按使用量排序主力模型) */}
+                                <div className="flex items-center gap-1.5 bg-gray-100 dark:bg-white/[0.05] pl-2 pr-1.5 py-0.5 rounded-lg border border-gray-200/70 dark:border-white/[0.08] text-[11px] font-mono">
+                                    <span className="text-[10px] text-gray-400 font-sans">🎯 主力:</span>
+                                    <span className="text-indigo-600 dark:text-cyan-300 font-bold max-w-[150px] truncate" title={targetModel}>
                                         {targetModel}
                                     </span>
+                                    {modelShareItems && modelShareItems.length > 1 && (
+                                        <select
+                                            value={targetModel}
+                                            onChange={(e) => {
+                                                setTargetModel(e.target.value);
+                                                handleRunProbe(e.target.value);
+                                            }}
+                                            className="bg-transparent text-[10px] text-gray-400 hover:text-gray-800 dark:hover:text-white outline-none cursor-pointer"
+                                            title="按真实使用量切换模型"
+                                        >
+                                            {modelShareItems.map((m, idx) => (
+                                                <option key={m.model} value={m.model} className="dark:bg-[#0c121e]">
+                                                    {idx === 0 ? `★ ${m.model} (用量第一)` : m.model}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    )}
                                     <button
                                         type="button"
                                         onClick={() => handleRunProbe()}
                                         disabled={isProbing}
-                                        className={`text-indigo-600 dark:text-cyan-400 hover:text-indigo-700 dark:hover:text-white p-0.5 transition-all ${
+                                        className={`text-indigo-600 dark:text-cyan-400 hover:text-indigo-700 dark:hover:text-white p-0.5 transition-all cursor-pointer ${
                                             isProbing ? 'animate-spin opacity-70' : 'active:scale-95'
                                         }`}
-                                        title="点击对当前模型执行即时链路测速"
+                                        title="点击对主力模型执行即时链路测速"
                                     >
                                         <RefreshCw className="w-3 h-3" />
                                     </button>
                                 </div>
-
-                                {/* 自选模型快捷触发切换 */}
-                                <button
-                                    type="button"
-                                    onClick={() => setShowCustomModelInput(!showCustomModelInput)}
-                                    className="text-[10px] text-indigo-600 dark:text-cyan-400 hover:underline font-mono"
-                                >
-                                    {showCustomModelInput ? '[关闭选择]' : '[自由切模型]'}
-                                </button>
 
                                 <span>
                                     {t('token_stats.cockpit_period_label', '周期')}:{' '}
@@ -486,60 +492,6 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 )}
                             </div>
                         </div>
-
-                        {/* 自定义模型自由输入与候选面板 (当 showCustomModelInput 为 true 时展开) */}
-                        {showCustomModelInput && (
-                            <div className="shrink-0 mb-2 p-2 bg-gray-50/90 dark:bg-white/[0.04] rounded-xl border border-indigo-200/50 dark:border-cyan-500/20 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-                                <div className="flex items-center gap-1.5 flex-1 min-w-[240px]">
-                                    <span className="text-gray-500 dark:text-gray-400 text-[10px]">自选测速模型:</span>
-                                    <input
-                                        type="text"
-                                        value={customModelVal}
-                                        onChange={(e) => setCustomModelVal(e.target.value)}
-                                        placeholder="如 gemini-3.8-flash-high, claude-3.8..."
-                                        className="flex-1 bg-white dark:bg-[#121826] border border-gray-200 dark:border-white/[0.1] rounded-lg px-2 py-1 text-xs text-gray-800 dark:text-white outline-none focus:border-indigo-500 dark:focus:border-cyan-400 font-mono"
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && customModelVal.trim()) {
-                                                setTargetModel(customModelVal.trim());
-                                                handleRunProbe(customModelVal.trim());
-                                                setShowCustomModelInput(false);
-                                            }
-                                        }}
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            if (customModelVal.trim()) {
-                                                setTargetModel(customModelVal.trim());
-                                                handleRunProbe(customModelVal.trim());
-                                                setShowCustomModelInput(false);
-                                            }
-                                        }}
-                                        className="px-2.5 py-1 bg-indigo-600 dark:bg-cyan-600 hover:bg-indigo-700 dark:hover:bg-cyan-500 text-white font-semibold rounded-lg text-xs"
-                                    >
-                                        测速
-                                    </button>
-                                </div>
-
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="text-[10px] text-gray-400">真实活跃模型:</span>
-                                    {(modelShareItems.length > 0 ? modelShareItems.slice(0, 4).map(m => m.model) : ['gemini-2.0-flash', 'claude-3-5-sonnet']).map((m) => (
-                                        <button
-                                            key={m}
-                                            type="button"
-                                            onClick={() => {
-                                                setTargetModel(m);
-                                                handleRunProbe(m);
-                                                setShowCustomModelInput(false);
-                                            }}
-                                            className="px-2 py-0.5 rounded bg-white dark:bg-white/[0.08] hover:bg-gray-100 dark:hover:bg-white/[0.15] text-[10px] text-gray-700 dark:text-gray-300 border border-gray-200/60 dark:border-white/[0.08]"
-                                        >
-                                            {m}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
 
                         {/* 三栏并排核心：左用量/模型列表 + 中360°辐射彩针 + 右财务与均次指标 */}
                         <div className="flex-1 min-h-0 grid grid-cols-12 gap-3 items-center">

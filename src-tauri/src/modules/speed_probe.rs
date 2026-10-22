@@ -32,13 +32,34 @@ pub struct ProbeModelInfo {
     pub source: String, // "account" (账号原生可用) | "custom" (自定义接口) | "official" (官方支持)
 }
 
-/// 动态获取当前环境真实可用的模型列表 (零代码捏造)
+/// 动态获取当前环境真实可用的模型列表 (严格按实际使用量降序排列)
 pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
     use std::collections::HashSet;
     let mut list = Vec::new();
     let mut seen = HashSet::new();
 
-    // 1. 优先提取当前所有已导入账号配额中真实存在的活跃模型
+    // 1. 最高优先级：严格按真实用量降序排列 (使用量最大的主力模型排在首位)
+    if let Ok(stats) = crate::modules::token_stats::get_model_stats(0) {
+        for s in stats {
+            if !s.model.is_empty() && s.total_tokens > 0 && seen.insert(s.model.clone()) {
+                let vendor = if s.model.to_lowercase().contains("claude") {
+                    "Anthropic".to_string()
+                } else if s.model.to_lowercase().contains("gpt") {
+                    "OpenAI".to_string()
+                } else {
+                    "Google".to_string()
+                };
+                list.push(ProbeModelInfo {
+                    id: s.model.clone(),
+                    name: s.model.clone(),
+                    vendor,
+                    source: "usage_rank".to_string(),
+                });
+            }
+        }
+    }
+
+    // 2. 补充当前账号配额中真实存在的模型
     if let Ok(accounts) = crate::modules::account::list_accounts() {
         for acc in accounts {
             if let Some(quota) = acc.quota {
@@ -63,7 +84,7 @@ pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
         }
     }
 
-    // 2. 提取用户在设置里配置的自定义接口/模型映射 (custom_mapping)
+    // 3. 补充自定义映射接口模型
     if let Ok(cfg) = crate::modules::config::load_app_config() {
         for (k, _) in cfg.proxy.custom_mapping {
             if !k.is_empty() && seen.insert(k.clone()) {
@@ -77,31 +98,13 @@ pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
         }
     }
 
-    // 3. 补充官方权威目录中的真实模型 (OfficialModelCatalog)
-    for model_id in crate::models::OfficialModelCatalog::all_model_ids() {
-        if !model_id.is_empty() && seen.insert(model_id.clone()) {
-            let (name, vendor) = if let Some(info) = crate::models::OfficialModelCatalog::get(&model_id) {
-                let v = info.api_provider.clone().unwrap_or_else(|| {
-                    if model_id.to_lowercase().contains("claude") {
-                        "Anthropic".to_string()
-                    } else {
-                        "Google".to_string()
-                    }
-                });
-                let n = info.display_name.clone().unwrap_or_else(|| model_id.clone());
-                (n, v)
-            } else {
-                let v = if model_id.to_lowercase().contains("claude") {
-                    "Anthropic".to_string()
-                } else {
-                    "Google".to_string()
-                };
-                (model_id.clone(), v)
-            };
+    // 4. 补充默认常用主力模型
+    for default_m in &["gemini-3.8-flash-high", "claude-3.8-flash-high", "claude-sonnet-4-6", "gemini-2.0-flash"] {
+        if seen.insert(default_m.to_string()) {
             list.push(ProbeModelInfo {
-                id: model_id,
-                name,
-                vendor,
+                id: default_m.to_string(),
+                name: default_m.to_string(),
+                vendor: if default_m.contains("claude") { "Anthropic".to_string() } else { "Google".to_string() },
                 source: "official".to_string(),
             });
         }
