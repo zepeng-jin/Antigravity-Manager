@@ -113,10 +113,12 @@ pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
     list
 }
 
-/// 根据测速结果计算摸鱼指数和趣味建议
+/// 根据测速结果与上下文吞吐科学计算摸鱼指数和趣味建议 (结合输入规模与真实算力，杜绝将几十万token长上下文处理误判为拥堵)
 pub fn calculate_slack_metrics(
     success: bool,
     ttft_ms: u64,
+    input_tokens: u32,
+    _output_tokens: u32,
     error_opt: Option<&str>,
 ) -> (String, u32, String, String) {
     if !success {
@@ -143,33 +145,46 @@ pub fn calculate_slack_metrics(
         return ("slack".to_string(), 100, title.to_string(), advice.to_string());
     }
 
-    if ttft_ms < 650 {
+    // 针对大上下文工程场景 (例如 50k~760k tokens 输入)：
+    // GPU 预填充庞大矩阵本身需要数秒运算，在 60s 内成功返回属于极高吞吐的算力全开状态，绝非拥堵！
+    if input_tokens >= 20_000 && ttft_ms <= 60_000 {
+        let k_tokens = input_tokens / 1000;
+        let title = format!("{}k 上下文 · 算力全开", k_tokens);
+        let advice = format!(
+            "正在高速处理 {}k 超大规模工程上下文，GPU 吞吐极佳，链路高效稳定。",
+            k_tokens
+        );
+        return ("sprint".to_string(), 10, title, advice);
+    }
+
+    // 常规轻量请求场景：
+    if ttft_ms < 1200 {
         (
             "sprint".to_string(),
             5,
             "极速响应 · 高效冲刺".to_string(),
             "上游响应极其丝滑，毫秒级首字吐出，建议保持专注高效产出。".to_string(),
         )
-    } else if ttft_ms < 1400 {
+    } else if ttft_ms < 3000 {
         (
             "smooth".to_string(),
-            30,
+            25,
             "运行平稳 · 节奏适中".to_string(),
             "服务延迟处于平稳区间，状态良好，推荐持续推进工作任务。".to_string(),
         )
-    } else if ttft_ms < 2800 {
+    } else if ttft_ms < 6000 {
         (
             "tea".to_string(),
-            70,
+            65,
             "上游排队迟缓 · 建议稍憩".to_string(),
-            "官方接口出现轻度拥塞（延迟 >1.5s），建议起身走走、喝口水调整节奏。".to_string(),
+            "官方接口出现排队（延迟 >3s），建议起身走走、喝口水调整节奏。".to_string(),
         )
     } else {
         (
             "slack".to_string(),
             95,
             "严重拥堵 · 摸鱼待机".to_string(),
-            "上游处理超过 2.8 秒，排队迟缓严重，建议适度放松休息。".to_string(),
+            "上游响应超过 6 秒，排队迟缓严重，建议适度放松休息。".to_string(),
         )
     }
 }
@@ -327,7 +342,7 @@ pub async fn probe_single_model_speed(
             };
 
             let (slack_level, slack_score, slack_title, slack_advice) =
-                calculate_slack_metrics(true, ttft_ms, None);
+                calculate_slack_metrics(true, ttft_ms, 3, 3, None);
 
             return Ok(SpeedProbeResult {
                 model: model_name.to_string(),
@@ -349,7 +364,7 @@ pub async fn probe_single_model_speed(
         } else {
             let err_text = resp.text().await.unwrap_or_default();
             let (slack_level, slack_score, slack_title, slack_advice) =
-                calculate_slack_metrics(false, total_duration_ms, Some(&err_text));
+                calculate_slack_metrics(false, total_duration_ms, 0, 0, Some(&err_text));
 
             return Ok(SpeedProbeResult {
                 model: model_name.to_string(),
@@ -402,7 +417,7 @@ pub async fn probe_single_model_speed(
                 let err_text = response.text().await.unwrap_or_default();
                 let total_duration_ms = start_instant.elapsed().as_millis() as u64;
                 let (slack_level, slack_score, slack_title, slack_advice) =
-                    calculate_slack_metrics(false, total_duration_ms, Some(&err_text));
+                    calculate_slack_metrics(false, total_duration_ms, 0, 0, Some(&err_text));
 
                 return Ok(SpeedProbeResult {
                     model: model_name.to_string(),
@@ -448,7 +463,7 @@ pub async fn probe_single_model_speed(
                 / 10.0;
 
             let (slack_level, slack_score, slack_title, slack_advice) =
-                calculate_slack_metrics(true, ttft_ms, None);
+                calculate_slack_metrics(true, ttft_ms, 3, total_output_tokens, None);
 
             Ok(SpeedProbeResult {
                 model: model_name.to_string(),
@@ -471,7 +486,7 @@ pub async fn probe_single_model_speed(
         Err(err) => {
             let total_duration_ms = start_instant.elapsed().as_millis() as u64;
             let (slack_level, slack_score, slack_title, slack_advice) =
-                calculate_slack_metrics(false, total_duration_ms, Some(&err));
+                calculate_slack_metrics(false, total_duration_ms, 0, 0, Some(&err));
 
             Ok(SpeedProbeResult {
                 model: model_name.to_string(),
@@ -504,7 +519,7 @@ pub async fn probe_all_models_speed() -> Result<Vec<SpeedProbeResult>, String> {
             Ok(res) => results.push(res),
             Err(e) => {
                 let (slack_level, slack_score, slack_title, slack_advice) =
-                    calculate_slack_metrics(false, 9999, Some(&e));
+                    calculate_slack_metrics(false, 9999, 0, 0, Some(&e));
                 results.push(SpeedProbeResult {
                     model: target.id.clone(),
                     display_name: target.name.clone(),
@@ -540,6 +555,7 @@ pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, Strin
             let model = log.model.unwrap_or_else(|| "unknown".to_string());
             let status = log.status;
             let duration_ms = log.duration;
+            let input_tokens = log.input_tokens.unwrap_or(0);
             let output_tokens = log.output_tokens.unwrap_or(0);
             let account_email = log.account_email.unwrap_or_default();
             let timestamp_secs = log.timestamp / 1000;
@@ -554,7 +570,7 @@ pub fn get_latest_real_request_speed() -> Result<Option<SpeedProbeResult>, Strin
 
             let success = status >= 200 && status < 400;
             let (slack_level, slack_score, slack_title, slack_advice) =
-                calculate_slack_metrics(success, ttft_ms, log.error.as_deref());
+                calculate_slack_metrics(success, ttft_ms, input_tokens, output_tokens, log.error.as_deref());
 
             return Ok(Some(SpeedProbeResult {
                 model: model.clone(),

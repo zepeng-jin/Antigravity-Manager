@@ -7,6 +7,7 @@ export interface RealtimeSpeedMetrics {
     ttft_ms: number;
     total_duration_ms: number;
     output_tokens: number;
+    input_tokens: number;
     tps: number;
     slack_level: 'sprint' | 'smooth' | 'tea' | 'slack' | 'idle';
     slack_score: number;
@@ -14,6 +15,13 @@ export interface RealtimeSpeedMetrics {
     slack_advice: string;
     is_live_log: boolean; // 标识是否来自真实日志实时推送
     timestamp: number;
+}
+
+/// 格式化毫秒为人类可读格式 (>=1000ms 显示为秒，避免像 14678ms 这样挤爆排版)
+export function formatDurationMs(ms?: number): string {
+    if (!ms || ms <= 0) return '—';
+    if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+    return `${Math.round(ms)}ms`;
 }
 
 /// 格式化人性化时间差 (秒级精确)
@@ -39,17 +47,17 @@ export function computeSlackStatus(
     durationMs: number,
     status: number,
     outputTokens: number = 0,
+    inputTokens: number = 0,
     modelName: string = 'gemini-3.8-flash-high',
     accountEmail: string = '',
     isLiveLog: boolean = false
 ): RealtimeSpeedMetrics {
-    // 过滤假请求与本地回环瞬时心跳 (例如 < 30ms 的本地探测，防止产生 1ms 的极速误导)
     const validDuration = Math.max(50, durationMs);
     const success = status >= 200 && status < 400;
     const ttft_ms = validDuration;
     const total_duration_ms = validDuration;
 
-    // 科学估算 TPS
+    // 科学估算真实 TPS (生成速度)
     const gen_secs = (validDuration / 1000) || 0.1;
     const tps = outputTokens > 0
         ? Number(((outputTokens / gen_secs) * 10 / 10).toFixed(1))
@@ -68,31 +76,38 @@ export function computeSlackStatus(
             slack_advice = '上游接口已达并发上限或触发配额排队，建议离线休息片刻。';
         } else if (status >= 500) {
             slack_title = '上游服务波动 · 建议休息';
-            slack_advice = '上游服务器暂时故障中，服务不可用，建议稍后再试。';
+            slack_advice = '上游服务器暂时故障，服务不可用，建议稍后再试。';
         } else {
             slack_title = '网络连接异常 · 检查通道';
             slack_advice = '上游请求无法送达，请确认本机代理隧道或网络连通性。';
         }
-    } else if (ttft_ms < 650) {
+    } else if (inputTokens >= 20_000 && ttft_ms <= 60_000) {
+        // 关键修复：输入达几十万 tokens 超大规模工程时 (例如 760k 输入耗时 14.6s)，这是 GPU 算力全开状态，绝非拥堵！
+        const kTokens = Math.round(inputTokens / 1000);
+        slack_level = 'sprint';
+        slack_score = 10;
+        slack_title = `${kTokens}k 上下文 · 算力全开`;
+        slack_advice = `正在高效处理 ${kTokens}k 超大规模工程上下文，GPU 吞吐极佳，链路高效稳定。`;
+    } else if (ttft_ms < 1200) {
         slack_level = 'sprint';
         slack_score = 5;
         slack_title = '极速响应 · 高效冲刺';
         slack_advice = '上游响应极其丝滑，毫秒级首字吐出，建议保持专注高效产出。';
-    } else if (ttft_ms < 1400) {
+    } else if (ttft_ms < 3000) {
         slack_level = 'smooth';
-        slack_score = 30;
+        slack_score = 25;
         slack_title = '运行平稳 · 节奏适中';
         slack_advice = '服务延迟处于平稳区间，状态良好，推荐持续推进工作任务。';
-    } else if (ttft_ms < 2800) {
+    } else if (ttft_ms < 6000) {
         slack_level = 'tea';
-        slack_score = 70;
+        slack_score = 65;
         slack_title = '上游排队迟缓 · 建议稍憩';
-        slack_advice = '官方接口出现轻度拥塞（延迟 >1.5s），建议起身走走、喝口水调整节奏。';
+        slack_advice = '官方接口出现轻度拥塞（延迟 >3s），建议起身走走、喝口水调整节奏。';
     } else {
         slack_level = 'slack';
         slack_score = 95;
         slack_title = '严重拥堵 · 摸鱼待机';
-        slack_advice = '上游处理超过 2.8 秒，排队迟缓严重，建议适度放松休息。';
+        slack_advice = '上游处理超过 6 秒，排队迟缓严重，建议适度放松休息。';
     }
 
     return {
@@ -104,7 +119,8 @@ export function computeSlackStatus(
         ttft_ms,
         total_duration_ms,
         output_tokens: outputTokens,
-        tps: Math.min(120, Math.max(5, tps)),
+        input_tokens: inputTokens,
+        tps: Math.min(150, Math.max(5, tps)),
         slack_level,
         slack_score,
         slack_title,

@@ -17,7 +17,7 @@ import { request as invoke } from '../../utils/request';
 import { UserTokenStatsModal, UserTokenSummaryItem } from '../user_tokens/UserTokenStatsModal';
 import { listen } from '@tauri-apps/api/event';
 import { isTauri } from '../../utils/env';
-import { computeSlackStatus } from '../../utils/speedProbeLogSync';
+import { computeSlackStatus, formatDurationMs } from '../../utils/speedProbeLogSync';
 
 interface TokenStatsSummary {
     total_input_tokens: number;
@@ -175,6 +175,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                         log.duration,
                         log.status || 200,
                         log.output_tokens || 0,
+                        log.input_tokens || 0,
                         reqModel,
                         log.account_email || '',
                         true
@@ -748,7 +749,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         }`} />
                                         <span className="text-gray-600 dark:text-gray-300 truncate" title={probeResult?.slack_advice || '网关调用正常'}>
                                             {isProbing ? '正在测速...' :
-                                             probeResult?.success ? `首字 ${probeResult.ttft_ms}ms · ${probeResult.slack_title}` :
+                                             probeResult?.success ? `${formatDurationMs(probeResult.ttft_ms)} · ${probeResult.slack_title}` :
                                              probeResult?.error_msg ? '测速受阻 · 点击重测' :
                                              t('token_stats.cockpit_status_normal', '网关调用正常')}
                                         </span>
@@ -878,7 +879,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                     <span className="font-mono text-[11px] text-teal-600 dark:text-teal-400 font-semibold flex items-center gap-1">
                                         <Zap className={`w-3 h-3 ${isProbing ? 'animate-spin text-amber-400' : ''}`} />
                                         {isProbing ? '测速中...' :
-                                         probeResult?.success ? `${probeResult.ttft_ms}ms · ${probeResult.tps}t/s` :
+                                         probeResult?.success ? `${formatDurationMs(probeResult.ttft_ms)} · ${probeResult.tps}t/s` :
                                          t('token_stats.zero_latency', '0 延时吞吐')}
                                     </span>
                                 </div>

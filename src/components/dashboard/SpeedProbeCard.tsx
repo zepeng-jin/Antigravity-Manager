@@ -8,6 +8,7 @@ import { listen } from '@tauri-apps/api/event';
 import { isTauri } from '../../utils/env';
 import {
     computeSlackStatus,
+    formatDurationMs,
     formatTimeAgo,
     isMetricsStale,
     RealtimeSpeedMetrics,
@@ -71,11 +72,12 @@ export function SpeedProbeCard() {
                 ttft_ms: 9999,
                 total_duration_ms: 9999,
                 output_tokens: 0,
+                input_tokens: 0,
                 tps: 0,
                 slack_level: 'slack',
                 slack_score: 100,
-                slack_title: '🚨 探针异常 · 奉旨摸鱼 🎮',
-                slack_advice: typeof error === 'string' ? error : '上游网络超时或无可用在线账号，理直气壮休息一下！',
+                slack_title: '探针调用受阻 · 检查网络',
+                slack_advice: typeof error === 'string' ? error : '上游网络超时或无可用在线账号，请稍后重试。',
                 is_live_log: false,
                 timestamp: Math.floor(Date.now() / 1000),
             };
@@ -119,6 +121,7 @@ export function SpeedProbeCard() {
                     const reqModel = log.model || selectedModel;
                     const status = log.status || 200;
                     const outputTokens = log.output_tokens || 0;
+                    const inputTokens = log.input_tokens || 0;
 
                     // 自动同步当前主力模型为真实触发请求的模型
                     if (log.model) {
@@ -129,6 +132,7 @@ export function SpeedProbeCard() {
                         log.duration,
                         status,
                         outputTokens,
+                        inputTokens,
                         reqModel,
                         log.account_email || '',
                         true
@@ -229,7 +233,7 @@ export function SpeedProbeCard() {
                         <div>
                             <div className="text-[9px] text-gray-400 dark:text-zinc-500 leading-none">首字</div>
                             <div className={`text-xs font-bold leading-tight mt-0.5 ${theme.textColor}`}>
-                                {loading ? '...' : isStale ? '—' : result?.success ? `${result.ttft_ms}ms` : '失败'}
+                                {loading ? '...' : isStale ? '—' : result?.success ? formatDurationMs(result.ttft_ms) : '失败'}
                             </div>
                         </div>
                         <div className="w-px h-5 bg-gray-200 dark:bg-white/[0.08]" />
@@ -243,7 +247,7 @@ export function SpeedProbeCard() {
                         <div>
                             <div className="text-[9px] text-gray-400 dark:text-zinc-500 leading-none">链路</div>
                             <div className="text-xs font-bold leading-tight text-gray-800 dark:text-zinc-200 mt-0.5">
-                                {loading ? '...' : isStale ? '—' : result?.success ? `${result.total_duration_ms}ms` : '异常'}
+                                {loading ? '...' : isStale ? '—' : result?.success ? formatDurationMs(result.total_duration_ms) : '异常'}
                             </div>
                         </div>
                     </div>
