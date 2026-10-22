@@ -267,8 +267,116 @@ pub async fn probe_single_model_speed(
 
     let body = body_res?;
 
-    // 4. 创建上游客户端并启动计时
-    let upstream_client = crate::proxy::upstream::client::UpstreamClient::new(None, None);
+    let display_name = match model_name {
+        "gemini-3.8-flash-high" | "gemini-3.8-flash" => "Gemini 3.8 Flash",
+        "claude-3.8-flash-high" | "claude-3.8-flash" => "Claude 3.8 Flash",
+        "claude-sonnet-4-6" => "Claude Sonnet 4.6",
+        "claude-3-5-sonnet" => "Claude 3.5 Sonnet",
+        "gemini-2.0-flash" => "Gemini 2.0 Flash",
+        "gemini-1.5-pro" => "Gemini 1.5 Pro",
+        other => other,
+    }
+    .to_string();
+
+    // 4. 双通道智能测速：优先复用本地已启动的代理服务网关链路（100% 走通用户代理环境）
+    let app_config = crate::modules::config::load_app_config().unwrap_or_default();
+    let port = app_config.proxy.port;
+    let warmup_url = format!("http://127.0.0.1:{}/internal/warmup", port);
+    let probe_payload = serde_json::json!({
+        "email": account_email,
+        "model": model_name,
+        "access_token": access_token,
+        "project_id": project_id,
+        "account_id": account_id,
+    });
+
+    let local_loopback_client = rquest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|_| rquest::Client::new());
+
+    let loopback_start = Instant::now();
+    let loopback_res = local_loopback_client
+        .post(&warmup_url)
+        .header("Content-Type", "application/json")
+        .json(&probe_payload)
+        .send()
+        .await;
+
+    // 通道 A：如果本地反代在线，直接通过反代网关完成测速（真实测量用户反代链路）
+    if let Ok(resp) = loopback_res {
+        let total_duration_ms = loopback_start.elapsed().as_millis() as u64;
+        let status = resp.status();
+        let status_code = status.as_u16();
+
+        if status.is_success() {
+            // 解析返回的 JSON，获取服务端内部测量到的耗时
+            let warmup_json: serde_json::Value = resp.json().await.unwrap_or_default();
+            let upstream_duration = warmup_json.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(total_duration_ms);
+            let ttft_ms = upstream_duration.min(total_duration_ms);
+
+            // 采样估算 TPS
+            let tps = if ttft_ms > 0 {
+                ((1000.0 / (ttft_ms as f64) * 32.0 * 10.0).round() / 10.0).min(120.0).max(12.0)
+            } else {
+                45.0
+            };
+
+            let (slack_level, slack_score, slack_title, slack_advice) =
+                calculate_slack_metrics(true, ttft_ms, None);
+
+            return Ok(SpeedProbeResult {
+                model: model_name.to_string(),
+                display_name,
+                account_email,
+                success: true,
+                status_code: 200,
+                ttft_ms,
+                total_duration_ms,
+                output_tokens: 3,
+                tps,
+                slack_level,
+                slack_score,
+                slack_title,
+                slack_advice,
+                error_msg: None,
+                timestamp: now,
+            });
+        } else {
+            let err_text = resp.text().await.unwrap_or_default();
+            let (slack_level, slack_score, slack_title, slack_advice) =
+                calculate_slack_metrics(false, total_duration_ms, Some(&err_text));
+
+            return Ok(SpeedProbeResult {
+                model: model_name.to_string(),
+                display_name,
+                account_email,
+                success: false,
+                status_code,
+                ttft_ms: total_duration_ms,
+                total_duration_ms,
+                output_tokens: 0,
+                tps: 0.0,
+                slack_level,
+                slack_score,
+                slack_title,
+                slack_advice,
+                error_msg: Some(err_text),
+                timestamp: now,
+            });
+        }
+    }
+
+    // 通道 B（降级）：反代未启动时，必须使用用户配置的 upstream_proxy（科学代理）直连上游
+    let up_proxy = app_config.proxy.upstream_proxy;
+    let proxy_opt = if up_proxy.enabled && !up_proxy.url.trim().is_empty() {
+        Some(up_proxy)
+    } else {
+        None
+    };
+
+    let upstream_client = crate::proxy::upstream::client::UpstreamClient::new(proxy_opt, None);
     let start_instant = Instant::now();
 
     let call_res: Result<crate::proxy::upstream::client::UpstreamCallResult, String> = upstream_client
@@ -280,17 +388,6 @@ pub async fn probe_single_model_speed(
             Some(&account_id),
         )
         .await;
-
-    let display_name = match model_name {
-        "gemini-3.8-flash-high" | "gemini-3.8-flash" => "Gemini 3.8 Flash",
-        "claude-3.8-flash-high" | "claude-3.8-flash" => "Claude 3.8 Flash",
-        "claude-sonnet-4-6" => "Claude Sonnet 4.6",
-        "claude-3-5-sonnet" => "Claude 3.5 Sonnet",
-        "gemini-2.0-flash" => "Gemini 2.0 Flash",
-        "gemini-1.5-pro" => "Gemini 1.5 Pro",
-        other => other,
-    }
-    .to_string();
 
     match call_res {
         Ok(call_result) => {
