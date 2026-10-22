@@ -28,22 +28,17 @@ export interface SpeedProbeResult {
     timestamp: number;
 }
 
-export interface ProbeModelTarget {
+export interface ProbeModelInfo {
     id: string;
     name: string;
     vendor: string;
+    source: string;
 }
-
-const DEFAULT_TARGETS: ProbeModelTarget[] = [
-    { id: 'gemini-3.8-flash-high', name: '3.8 Flash', vendor: 'Google' },
-    { id: 'claude-3.8-flash-high', name: 'Claude 3.8', vendor: 'Anthropic' },
-    { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', vendor: 'Anthropic' },
-    { id: 'gemini-2.0-flash', name: '2.0 Flash', vendor: 'Google' },
-];
 
 const LOCAL_STORAGE_KEY = 'antigravity_last_speed_probe_result';
 
 export function SpeedProbeCard() {
+    const [dynamicTargets, setDynamicTargets] = useState<ProbeModelInfo[]>([]);
     const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash-high');
     const [customModelInput, setCustomModelInput] = useState<string>('');
     const [showInput, setShowInput] = useState<boolean>(false);
@@ -55,6 +50,22 @@ export function SpeedProbeCard() {
         } catch (e) {}
         return null;
     });
+
+    // 动态拉取当前系统/账号/自定义映射中真实存在的所有模型
+    useEffect(() => {
+        invoke<ProbeModelInfo[]>('get_probe_model_targets')
+            .then((targets) => {
+                if (targets && targets.length > 0) {
+                    setDynamicTargets(targets);
+                    // 默认选第一个真实账号模型
+                    const firstAccountModel = targets.find((t) => t.source === 'account');
+                    if (firstAccountModel) {
+                        setSelectedModel(firstAccountModel.id);
+                    }
+                }
+            })
+            .catch((e) => console.error('[SpeedProbe] Failed to fetch models:', e));
+    }, []);
 
     const handleProbe = useCallback(async (modelId?: string) => {
         const targetModel = modelId || selectedModel;
@@ -177,10 +188,10 @@ export function SpeedProbeCard() {
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                        {/* 常用模型药丸切换 */}
-                        <div className="flex bg-gray-100 dark:bg-white/[0.04] p-0.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] text-[11px]">
-                            {DEFAULT_TARGETS.map((t) => (
+                    <div className="flex flex-wrap items-center gap-2">
+                        {/* 动态真实模型快捷药丸 (动态提取当前真实可用模型) */}
+                        <div className="flex items-center bg-gray-100 dark:bg-white/[0.04] p-0.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] text-[11px]">
+                            {dynamicTargets.slice(0, 4).map((t) => (
                                 <button
                                     key={t.id}
                                     type="button"
@@ -195,10 +206,47 @@ export function SpeedProbeCard() {
                                             ? 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm font-bold dark:border dark:border-white/[0.12]'
                                             : 'text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
                                     }`}
+                                    title={`模型: ${t.id} (${t.vendor})`}
                                 >
                                     {t.name.replace('Gemini ', '').replace('Claude ', '')}
                                 </button>
                             ))}
+
+                            {/* 完整真实模型下拉选择 (支持自定义接口与全部官方模型) */}
+                            {dynamicTargets.length > 4 && (
+                                <select
+                                    value={dynamicTargets.slice(0, 4).some(t => t.id === selectedModel) ? '' : selectedModel}
+                                    onChange={(e) => {
+                                        if (e.target.value) {
+                                            setSelectedModel(e.target.value);
+                                            setShowInput(false);
+                                            handleProbe(e.target.value);
+                                        }
+                                    }}
+                                    className="bg-transparent text-[10px] text-gray-600 dark:text-zinc-300 px-1 py-1 outline-none font-mono cursor-pointer"
+                                    title="从全部真实模型与接口列表中选择"
+                                >
+                                    <option value="" disabled className="dark:bg-[#15161b]">更多真实模型...</option>
+                                    <optgroup label="账号实际支持模型" className="dark:bg-[#15161b]">
+                                        {dynamicTargets.filter(t => t.source === 'account').map(t => (
+                                            <option key={t.id} value={t.id}>{t.name} ({t.vendor})</option>
+                                        ))}
+                                    </optgroup>
+                                    {dynamicTargets.some(t => t.source === 'custom') && (
+                                        <optgroup label="自定义映射接口模型" className="dark:bg-[#15161b]">
+                                            {dynamicTargets.filter(t => t.source === 'custom').map(t => (
+                                                <option key={t.id} value={t.id}>{t.name}</option>
+                                            ))}
+                                        </optgroup>
+                                    )}
+                                    <optgroup label="官方支持模型" className="dark:bg-[#15161b]">
+                                        {dynamicTargets.filter(t => t.source === 'official').slice(0, 10).map(t => (
+                                            <option key={t.id} value={t.id}>{t.name} ({t.vendor})</option>
+                                        ))}
+                                    </optgroup>
+                                </select>
+                            )}
+
                             <button
                                 type="button"
                                 onClick={() => setShowInput(!showInput)}
@@ -207,8 +255,9 @@ export function SpeedProbeCard() {
                                         ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-cyan-400 shadow-sm font-bold dark:border dark:border-white/[0.12]'
                                         : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
                                 }`}
+                                title="手动输入其他第三方接口或未列出模型"
                             >
-                                + 自选
+                                + 手输
                             </button>
                         </div>
 

@@ -23,42 +23,91 @@ pub struct SpeedProbeResult {
     pub timestamp: i64,
 }
 
-/// 支持的主流测速模型配置
+/// 真实测速模型元信息 (动态汇聚账号配额、官方目录与自定义映射)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProbeModelTarget {
+pub struct ProbeModelInfo {
     pub id: String,
     pub name: String,
     pub vendor: String,
+    pub source: String, // "account" (账号原生可用) | "custom" (自定义接口) | "official" (官方支持)
 }
 
-pub fn get_default_probe_targets() -> Vec<ProbeModelTarget> {
-    vec![
-        ProbeModelTarget {
-            id: "gemini-3.8-flash-high".to_string(),
-            name: "Gemini 3.8 Flash".to_string(),
-            vendor: "Google".to_string(),
-        },
-        ProbeModelTarget {
-            id: "claude-3.8-flash-high".to_string(),
-            name: "Claude 3.8 Flash".to_string(),
-            vendor: "Anthropic".to_string(),
-        },
-        ProbeModelTarget {
-            id: "claude-sonnet-4-6".to_string(),
-            name: "Claude Sonnet 4.6".to_string(),
-            vendor: "Anthropic".to_string(),
-        },
-        ProbeModelTarget {
-            id: "gemini-2.0-flash".to_string(),
-            name: "Gemini 2.0 Flash".to_string(),
-            vendor: "Google".to_string(),
-        },
-        ProbeModelTarget {
-            id: "gemini-1.5-pro".to_string(),
-            name: "Gemini 1.5 Pro".to_string(),
-            vendor: "Google".to_string(),
-        },
-    ]
+/// 动态获取当前环境真实可用的模型列表 (零代码捏造)
+pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
+    use std::collections::HashSet;
+    let mut list = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 1. 优先提取当前所有已导入账号配额中真实存在的活跃模型
+    if let Ok(accounts) = crate::modules::account::list_accounts() {
+        for acc in accounts {
+            if let Some(quota) = acc.quota {
+                for m in quota.models {
+                    if !m.name.is_empty() && seen.insert(m.name.clone()) {
+                        let vendor = if m.name.to_lowercase().contains("claude") {
+                            "Anthropic".to_string()
+                        } else if m.name.to_lowercase().contains("gpt") {
+                            "OpenAI".to_string()
+                        } else {
+                            "Google".to_string()
+                        };
+                        list.push(ProbeModelInfo {
+                            id: m.name.clone(),
+                            name: m.name.clone(),
+                            vendor,
+                            source: "account".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 提取用户在设置里配置的自定义接口/模型映射 (custom_mapping)
+    if let Ok(cfg) = crate::modules::config::load_app_config() {
+        for (k, _) in cfg.proxy.custom_mapping {
+            if !k.is_empty() && seen.insert(k.clone()) {
+                list.push(ProbeModelInfo {
+                    id: k.clone(),
+                    name: k,
+                    vendor: "Custom".to_string(),
+                    source: "custom".to_string(),
+                });
+            }
+        }
+    }
+
+    // 3. 补充官方权威目录中的真实模型 (OfficialModelCatalog)
+    for model_id in crate::models::OfficialModelCatalog::all_model_ids() {
+        if !model_id.is_empty() && seen.insert(model_id.clone()) {
+            let (name, vendor) = if let Some(info) = crate::models::OfficialModelCatalog::get(&model_id) {
+                let v = info.api_provider.clone().unwrap_or_else(|| {
+                    if model_id.to_lowercase().contains("claude") {
+                        "Anthropic".to_string()
+                    } else {
+                        "Google".to_string()
+                    }
+                });
+                let n = info.display_name.clone().unwrap_or_else(|| model_id.clone());
+                (n, v)
+            } else {
+                let v = if model_id.to_lowercase().contains("claude") {
+                    "Anthropic".to_string()
+                } else {
+                    "Google".to_string()
+                };
+                (model_id.clone(), v)
+            };
+            list.push(ProbeModelInfo {
+                id: model_id,
+                name,
+                vendor,
+                source: "official".to_string(),
+            });
+        }
+    }
+
+    list
 }
 
 /// 根据测速结果计算摸鱼指数和趣味建议
@@ -147,11 +196,15 @@ pub async fn probe_single_model_speed(
     let (access_token, project_id) =
         crate::modules::quota::get_valid_token_for_warmup(&active_acc).await?;
 
-    // 3. 构建轻量探针报文并进行核心模型路由映射
-    let empty_map = std::collections::HashMap::new();
-    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route(
+    // 3. 构建轻量探针报文并进行核心模型路由映射（结合用户自定义接口映射表）
+    let custom_mapping = crate::modules::config::load_app_config()
+        .map(|c| c.proxy.custom_mapping)
+        .unwrap_or_default();
+
+    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route_with_effort(
         model_name,
-        &empty_map,
+        &custom_mapping,
+        None,
     );
 
     let is_claude = mapped_model.to_lowercase().contains("claude")
@@ -341,12 +394,12 @@ pub async fn probe_single_model_speed(
     }
 }
 
-/// 批量执行全主流模型速度探测
+/// 批量执行真实模型速度探测 (前6个真实活跃模型)
 pub async fn probe_all_models_speed() -> Result<Vec<SpeedProbeResult>, String> {
-    let targets = get_default_probe_targets();
+    let targets = get_available_probe_models();
     let mut results = Vec::new();
 
-    for target in targets {
+    for target in targets.into_iter().take(6) {
         match probe_single_model_speed(&target.id, None).await {
             Ok(res) => results.push(res),
             Err(e) => {

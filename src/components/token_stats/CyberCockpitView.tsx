@@ -485,8 +485,8 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 </div>
 
                                 <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="text-[10px] text-gray-400">快捷推荐:</span>
-                                    {['gemini-3.8-flash-high', 'claude-3.8-flash-high', 'claude-sonnet-4-6', 'gemini-2.0-flash'].map((m) => (
+                                    <span className="text-[10px] text-gray-400">真实活跃模型:</span>
+                                    {(modelShareItems.length > 0 ? modelShareItems.slice(0, 4).map(m => m.model) : ['gemini-2.0-flash', 'claude-3-5-sonnet']).map((m) => (
                                         <button
                                             key={m}
                                             type="button"
@@ -497,7 +497,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                             }}
                                             className="px-2 py-0.5 rounded bg-white dark:bg-white/[0.08] hover:bg-gray-100 dark:hover:bg-white/[0.15] text-[10px] text-gray-700 dark:text-gray-300 border border-gray-200/60 dark:border-white/[0.08]"
                                         >
-                                            {m.replace('-high', '').replace('claude-', '').replace('gemini-', '')}
+                                            {m}
                                         </button>
                                     ))}
                                 </div>

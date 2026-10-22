@@ -1568,8 +1568,8 @@ pub async fn run_all_models_speed_probe() -> Result<Vec<crate::modules::speed_pr
 }
 
 #[tauri::command]
-pub fn get_probe_model_targets() -> Vec<crate::modules::speed_probe::ProbeModelTarget> {
-    crate::modules::speed_probe::get_default_probe_targets()
+pub fn get_probe_model_targets() -> Vec<crate::modules::speed_probe::ProbeModelInfo> {
+    crate::modules::speed_probe::get_available_probe_models()
 }
 
 #[tauri::command]
