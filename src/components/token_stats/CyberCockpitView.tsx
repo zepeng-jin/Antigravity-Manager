@@ -15,6 +15,9 @@ import { ModelShareItem } from './TopModelsShareCard';
 import { AccountTokenStats } from '../../pages/TokenStats';
 import { request as invoke } from '../../utils/request';
 import { UserTokenStatsModal, UserTokenSummaryItem } from '../user_tokens/UserTokenStatsModal';
+import { listen } from '@tauri-apps/api/event';
+import { isTauri } from '../../utils/env';
+import { computeSlackStatus } from '../../utils/speedProbeLogSync';
 
 interface TokenStatsSummary {
     total_input_tokens: number;
@@ -97,6 +100,40 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
             setTargetModel(modelShareItems[0].model);
         }
     }, [modelShareItems]);
+
+    // 核心优化：除初次探测外，后续监听真实网关调用日志，零开销自动实时同步速度与码表指针
+    useEffect(() => {
+        if (!isTauri()) return;
+        let unlistenFn: (() => void) | null = null;
+        const setupLogListener = async () => {
+            try {
+                unlistenFn = await listen<any>('proxy://request', (event) => {
+                    const log = event.payload;
+                    if (!log || typeof log.duration !== 'number' || log.duration <= 0) return;
+                    const reqModel = log.model || targetModel;
+                    const liveMetrics = computeSlackStatus(
+                        log.duration,
+                        log.status || 200,
+                        log.output_tokens || 0,
+                        reqModel,
+                        log.account_email || '',
+                        true
+                    );
+                    setProbeResult(liveMetrics);
+                    try {
+                        localStorage.setItem('antigravity_last_speed_probe_result', JSON.stringify(liveMetrics));
+                    } catch (e) {}
+                });
+            } catch (e) {
+                console.debug('[CyberCockpit] Log listener setup skipped:', e);
+            }
+        };
+
+        setupLogListener();
+        return () => {
+            if (unlistenFn) unlistenFn();
+        };
+    }, [targetModel]);
 
     const handleRunProbe = useCallback(async (modelToTest?: string) => {
         const m = (modelToTest || targetModel).trim();

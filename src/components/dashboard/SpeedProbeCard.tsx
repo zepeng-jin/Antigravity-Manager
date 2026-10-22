@@ -9,6 +9,9 @@ import {
     Gamepad2,
 } from 'lucide-react';
 import { request as invoke } from '../../utils/request';
+import { listen } from '@tauri-apps/api/event';
+import { isTauri } from '../../utils/env';
+import { computeSlackStatus } from '../../utils/speedProbeLogSync';
 
 export interface SpeedProbeResult {
     model: string;
@@ -57,7 +60,6 @@ export function SpeedProbeCard() {
             .then((targets) => {
                 if (targets && targets.length > 0) {
                     setDynamicTargets(targets);
-                    // 默认选第一个真实账号模型
                     const firstAccountModel = targets.find((t) => t.source === 'account');
                     if (firstAccountModel) {
                         setSelectedModel(firstAccountModel.id);
@@ -66,6 +68,44 @@ export function SpeedProbeCard() {
             })
             .catch((e) => console.error('[SpeedProbe] Failed to fetch models:', e));
     }, []);
+
+    // 核心优化：除初次探测外，后续监听真实代理请求日志，全自动实时零开销刷新速度与摸鱼指数
+    useEffect(() => {
+        if (!isTauri()) return;
+        let unlistenFn: (() => void) | null = null;
+        const setupLogListener = async () => {
+            try {
+                unlistenFn = await listen<any>('proxy://request', (event) => {
+                    const log = event.payload;
+                    if (!log || typeof log.duration !== 'number' || log.duration <= 0) return;
+                    const reqModel = log.model || selectedModel;
+                    const status = log.status || 200;
+                    const outputTokens = log.output_tokens || 0;
+
+                    // 实时由真实写代码日志更新测速指标
+                    const liveMetrics = computeSlackStatus(
+                        log.duration,
+                        status,
+                        outputTokens,
+                        reqModel,
+                        log.account_email || '',
+                        true
+                    );
+                    setResult(liveMetrics);
+                    try {
+                        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(liveMetrics));
+                    } catch (e) {}
+                });
+            } catch (e) {
+                console.debug('[SpeedProbe] Live log listener setup skipped:', e);
+            }
+        };
+
+        setupLogListener();
+        return () => {
+            if (unlistenFn) unlistenFn();
+        };
+    }, [selectedModel]);
 
     const handleProbe = useCallback(async (modelId?: string) => {
         const targetModel = modelId || selectedModel;
@@ -179,10 +219,21 @@ export function SpeedProbeCard() {
                             <Gauge className="w-4 h-4" />
                         </div>
                         <div>
-                            <span className="text-xs font-bold text-gray-800 dark:text-zinc-200">
-                                实时服务速度探测 · 摸鱼雷达
-                            </span>
-                            <span className="text-[10px] text-gray-400 dark:text-zinc-500 ml-2 font-mono">
+                            <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-gray-800 dark:text-zinc-200">
+                                    实时服务速度探测 · 摸鱼雷达
+                                </span>
+                                {result && (
+                                    <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-medium ${
+                                        (result as any).is_live_log
+                                            ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                                            : 'bg-indigo-50 dark:bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20'
+                                    }`}>
+                                        {(result as any).is_live_log ? '⚡️ 真实调用实时同步' : '探针测速'}
+                                    </span>
+                                )}
+                            </div>
+                            <span className="text-[10px] text-gray-400 dark:text-zinc-500 font-mono">
                                 {timeAgo(result?.timestamp)}
                             </span>
                         </div>
