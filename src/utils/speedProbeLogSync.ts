@@ -8,12 +8,31 @@ export interface RealtimeSpeedMetrics {
     total_duration_ms: number;
     output_tokens: number;
     tps: number;
-    slack_level: 'sprint' | 'smooth' | 'tea' | 'slack';
+    slack_level: 'sprint' | 'smooth' | 'tea' | 'slack' | 'idle';
     slack_score: number;
     slack_title: string;
     slack_advice: string;
     is_live_log: boolean; // 标识是否来自真实日志实时推送
     timestamp: number;
+}
+
+/// 格式化人性化时间差 (秒级精确)
+export function formatTimeAgo(ts?: number): string {
+    if (!ts || ts <= 0) return '尚未测速';
+    const now = Math.floor(Date.now() / 1000);
+    const diff = Math.max(0, now - ts);
+    if (diff < 10) return '刚刚';
+    if (diff < 60) return `${diff}秒前`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+    return `${Math.floor(diff / 86400)}天前`;
+}
+
+/// 检查数据是否过期 (超过 20 分钟未更新视为待机)
+export function isMetricsStale(ts?: number): boolean {
+    if (!ts || ts <= 0) return true;
+    const now = Math.floor(Date.now() / 1000);
+    return (now - ts) > 1200; // 20 分钟
 }
 
 export function computeSlackStatus(
@@ -24,17 +43,19 @@ export function computeSlackStatus(
     accountEmail: string = '',
     isLiveLog: boolean = false
 ): RealtimeSpeedMetrics {
+    // 过滤假请求与本地回环瞬时心跳 (例如 < 30ms 的本地探测，防止产生 1ms 的极速误导)
+    const validDuration = Math.max(50, durationMs);
     const success = status >= 200 && status < 400;
-    const ttft_ms = durationMs;
-    const total_duration_ms = durationMs;
+    const ttft_ms = validDuration;
+    const total_duration_ms = validDuration;
 
-    // 估算真实 TPS
-    const gen_secs = (durationMs / 1000) || 0.1;
+    // 科学估算 TPS
+    const gen_secs = (validDuration / 1000) || 0.1;
     const tps = outputTokens > 0
         ? Number(((outputTokens / gen_secs) * 10 / 10).toFixed(1))
-        : durationMs > 0 ? Number(((1000 / durationMs) * 32).toFixed(1)) : 45.0;
+        : Number(((1000 / validDuration) * 28).toFixed(1));
 
-    let slack_level: 'sprint' | 'smooth' | 'tea' | 'slack' = 'smooth';
+    let slack_level: 'sprint' | 'smooth' | 'tea' | 'slack' | 'idle' = 'smooth';
     let slack_score = 30;
     let slack_title = '💻 节奏平稳 · 专注干活 💼';
     let slack_advice = '服务延迟适中稳定，上游状态良好，一杯茶一包烟，一行代码写一天。';
@@ -83,7 +104,7 @@ export function computeSlackStatus(
         ttft_ms,
         total_duration_ms,
         output_tokens: outputTokens,
-        tps: Math.min(150, Math.max(5, tps)),
+        tps: Math.min(120, Math.max(5, tps)),
         slack_level,
         slack_score,
         slack_title,

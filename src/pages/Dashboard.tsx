@@ -343,7 +343,7 @@ function Dashboard() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
                 style={{ position: 'relative', zIndex: 1, willChange: 'opacity, transform' }}
-                className="p-5 space-y-4 max-w-7xl mx-auto"
+                className="p-4 sm:p-5 space-y-3 max-w-7xl mx-auto"
             >
                 {/* 问候语和全局刷新/添加操作栏 */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">

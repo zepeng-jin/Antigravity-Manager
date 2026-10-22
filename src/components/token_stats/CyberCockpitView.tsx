@@ -333,7 +333,10 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
 
         const effectivePeak = peak > 0 ? peak : 1;
         buckets.forEach(b => {
-            b.pct = peak > 0 ? Math.max(10, Math.round((b.data.total_tokens / effectivePeak) * 100)) : 10;
+            // 真实数据驱动：0 使用时绝对为 0，彻底消除假矮柱；只有真实产生用量时才计算高度百分比
+            b.pct = b.data.total_tokens > 0 && peak > 0
+                ? Math.max(6, Math.round((b.data.total_tokens / effectivePeak) * 100))
+                : 0;
         });
 
         return {
@@ -721,37 +724,56 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 </div>
                             </div>
 
-                            {/* 24 根紧凑高低发光立柱 */}
+                            {/* 24 根音频频谱动态律动立柱 (0 使用无假柱，有使用随律动起伏) */}
                             <div className="flex-1 flex items-end justify-between gap-1 py-1 px-0.5">
                                 {hourBuckets.map((bucket, i) => {
                                     const isPeak = bucket.data.total_tokens === maxHourTokens && maxHourTokens > 0;
                                     const isHovered = hoveredHourIdx === i;
+                                    const hasData = bucket.data.total_tokens > 0;
+
                                     return (
                                         <div
                                             key={i}
                                             onMouseEnter={() => setHoveredHourIdx(i)}
                                             onMouseLeave={() => setHoveredHourIdx(null)}
-                                            className="flex-1 flex flex-col items-center justify-end h-full cursor-pointer group"
+                                            className="flex-1 flex flex-col items-center justify-end h-full cursor-pointer group relative"
                                         >
-                                            <div
-                                                className={`w-1 h-1 rounded-full mb-0.5 transition-all ${
-                                                    isPeak
-                                                        ? 'bg-amber-500 dark:bg-amber-400 shadow-[0_0_6px_#f59e0b]'
-                                                        : isHovered
-                                                        ? 'bg-blue-600 dark:bg-white shadow-[0_0_6px_currentColor]'
-                                                        : 'bg-blue-300/60 dark:bg-emerald-400/60'
-                                                }`}
-                                            />
-                                            <div
-                                                className={`w-full rounded-sm transition-all ${
-                                                    isPeak
-                                                        ? 'bg-gradient-to-t from-blue-600 dark:from-emerald-600 via-amber-400 to-amber-500'
-                                                        : isHovered
-                                                        ? 'bg-gradient-to-t from-blue-400 dark:from-teal-500 to-blue-600 dark:to-emerald-300'
-                                                        : 'bg-gradient-to-t from-blue-100 dark:from-[#102a3a] to-blue-500/70 dark:to-emerald-500/80'
-                                                }`}
-                                                style={{ height: `${bucket.pct}%` }}
-                                            />
+                                            {/* 顶部脉冲光珠 (仅在有真实使用量时显示，峰值带高光) */}
+                                            {hasData ? (
+                                                <div
+                                                    className={`w-1 h-1 rounded-full mb-0.5 transition-all ${
+                                                        isPeak
+                                                            ? 'bg-amber-400 shadow-[0_0_8px_#f59e0b] scale-125'
+                                                            : isHovered
+                                                            ? 'bg-white shadow-[0_0_6px_#ffffff]'
+                                                            : 'bg-emerald-400/80 dark:bg-emerald-400'
+                                                    }`}
+                                                />
+                                            ) : (
+                                                <div className="w-0.5 h-0.5 rounded-full bg-gray-200 dark:bg-white/[0.08] mb-0.5" />
+                                            )}
+
+                                            {/* 柱体 (真实数据驱动：0 使用时绝对平整无柱，有使用时动态起伏) */}
+                                            {hasData ? (
+                                                <motion.div
+                                                    initial={{ height: 0 }}
+                                                    animate={{ height: `${bucket.pct}%` }}
+                                                    transition={{
+                                                        duration: 0.5,
+                                                        delay: i * 0.015,
+                                                        ease: [0.16, 1, 0.3, 1],
+                                                    }}
+                                                    className={`w-full rounded-t-sm transition-colors ${
+                                                        isPeak
+                                                            ? 'bg-gradient-to-t from-emerald-600 via-amber-400 to-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.3)]'
+                                                            : isHovered
+                                                            ? 'bg-gradient-to-t from-teal-500 to-cyan-300'
+                                                            : 'bg-gradient-to-t from-blue-500/20 dark:from-[#0d2838] to-teal-500/80 dark:to-emerald-500/90'
+                                                    }`}
+                                                />
+                                            ) : (
+                                                <div className="w-full h-[1px] bg-gray-200 dark:bg-white/[0.06]" />
+                                            )}
                                         </div>
                                     );
                                 })}
@@ -800,18 +822,19 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                 </div>
                             </div>
 
-                            {/* 跑车运动码表 (带可动指针、发光流线与轴承) */}
-                            <div className="flex-1 relative flex items-center justify-center overflow-hidden py-0.5">
-                                <svg width="220" height="96" viewBox="0 0 220 96" className="overflow-visible">
+                            {/* 纯正超跑发光车速表盘 (半圆宽轨 + 刻度 + 发光能量条 + 完整轴承贯穿机械指针) */}
+                            <div className="flex-1 relative flex items-center justify-center overflow-hidden py-1">
+                                <svg width="220" height="106" viewBox="0 0 220 106" className="overflow-visible">
                                     <defs>
-                                        <linearGradient id="arcJ23Grad" x1="0%" y1="0%" x2="100%" y2="0%">
-                                            <stop offset="0%" stopColor="#f97316" />
-                                            <stop offset="50%" stopColor="#eab308" />
-                                            <stop offset="100%" stopColor="#10b981" />
+                                        <linearGradient id="speedoRainbowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                            <stop offset="0%" stopColor="#06b6d4" />
+                                            <stop offset="35%" stopColor="#10b981" />
+                                            <stop offset="70%" stopColor="#f59e0b" />
+                                            <stop offset="100%" stopColor="#f43f5e" />
                                         </linearGradient>
                                         <linearGradient id="needleGrad" x1="0%" y1="100%" x2="0%" y2="0%">
-                                            <stop offset="0%" stopColor="#f43f5e" />
-                                            <stop offset="70%" stopColor="#fb7185" />
+                                            <stop offset="0%" stopColor="#e11d48" />
+                                            <stop offset="75%" stopColor="#fb7185" />
                                             <stop offset="100%" stopColor="#ffffff" />
                                         </linearGradient>
                                         <filter id="glowNeedle" x="-30%" y="-30%" width="160%" height="160%">
@@ -820,18 +843,45 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         </filter>
                                     </defs>
 
-                                    {/* 41 根半圆刻度线 */}
-                                    {Array.from({ length: 41 }).map((_, i) => {
-                                        const angle = Math.PI + (i / 40) * Math.PI;
+                                    {/* 1. 表盘外围深色底轨 (Track Arc) */}
+                                    <path
+                                        d="M 38 92 A 72 72 0 0 1 182 92"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="7"
+                                        strokeLinecap="round"
+                                        className="text-gray-150 dark:text-[#141d2e]"
+                                    />
+
+                                    {/* 2. 动态发光速度能量条 (平滑随命中率/速度填充，带霓虹光效) */}
+                                    <motion.path
+                                        d="M 38 92 A 72 72 0 0 1 182 92"
+                                        fill="none"
+                                        stroke="url(#speedoRainbowGrad)"
+                                        strokeWidth="7"
+                                        strokeLinecap="round"
+                                        strokeDasharray="226.2"
+                                        initial={{ strokeDashoffset: 226.2 }}
+                                        animate={{
+                                            strokeDashoffset: 226.2 * (1 - Math.min(100, Math.max(0, cacheMetrics.hitRate)) / 100),
+                                        }}
+                                        transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                                        filter="url(#glowNeedle)"
+                                    />
+
+                                    {/* 3. 精密仪表刻度标记 (0 ~ 100 每 10% 一根刻度) */}
+                                    {Array.from({ length: 21 }).map((_, i) => {
+                                        const angle = Math.PI + (i / 20) * Math.PI;
                                         const cx = 110;
-                                        const cy = 90;
-                                        const rInner = 56;
-                                        const rOuter = i % 5 === 0 ? 82 : 74;
+                                        const cy = 92;
+                                        const isMajor = i % 5 === 0;
+                                        const rInner = isMajor ? 56 : 60;
+                                        const rOuter = 65;
                                         const x1 = cx + rInner * Math.cos(angle);
                                         const y1 = cy + rInner * Math.sin(angle);
                                         const x2 = cx + rOuter * Math.cos(angle);
                                         const y2 = cy + rOuter * Math.sin(angle);
-                                        const isActive = (i / 40) * 100 <= Math.max(8, cacheMetrics.hitRate);
+                                        const isLit = (i / 20) * 100 <= cacheMetrics.hitRate;
 
                                         return (
                                             <line
@@ -840,15 +890,20 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                                 y1={y1}
                                                 x2={x2}
                                                 y2={y2}
-                                                stroke={isActive ? 'url(#arcJ23Grad)' : 'currentColor'}
-                                                className={isActive ? '' : 'text-gray-200 dark:text-[#1e293b]'}
-                                                strokeWidth={i % 5 === 0 ? '2.5' : '1.5'}
+                                                stroke={isLit ? '#ffffff' : 'currentColor'}
+                                                className={isLit ? 'opacity-90' : 'text-gray-300 dark:text-[#22314a]'}
+                                                strokeWidth={isMajor ? '1.8' : '1'}
                                                 strokeLinecap="round"
                                             />
                                         );
                                     })}
 
-                                    {/* 跑车动态摆动发光指针 (Framer Motion 真实弹簧动效，可以动！) */}
+                                    {/* 4. 车速表刻度数字 (0, 50, 100) */}
+                                    <text x="32" y="103" textAnchor="middle" className="text-[9px] font-mono font-bold fill-gray-400 dark:fill-zinc-500">0</text>
+                                    <text x="110" y="24" textAnchor="middle" className="text-[9px] font-mono font-bold fill-gray-400 dark:fill-zinc-500">50</text>
+                                    <text x="188" y="103" textAnchor="middle" className="text-[9px] font-mono font-bold fill-gray-400 dark:fill-zinc-500">100</text>
+
+                                    {/* 5. 真实跑车机械运动指针 (Framer Motion 真实弹簧动效，踩油门弹射自检！) */}
                                     <motion.g
                                         initial={{ rotate: -90 }}
                                         animate={{
@@ -856,51 +911,58 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         }}
                                         transition={{
                                             type: 'spring',
-                                            damping: 14,
+                                            damping: 12,
                                             stiffness: 85,
-                                            restDelta: 0.2,
+                                            restDelta: 0.1,
                                         }}
-                                        style={{ transformOrigin: '110px 90px' }}
+                                        style={{ transformOrigin: '110px 92px' }}
                                     >
-                                        {/* 指针背光虚影 */}
+                                        {/* 指针发光阴影 */}
                                         <line
                                             x1="110"
-                                            y1="90"
+                                            y1="92"
                                             x2="110"
-                                            y2="30"
+                                            y2="28"
                                             stroke="#f43f5e"
-                                            strokeWidth="3"
+                                            strokeWidth="3.5"
                                             strokeLinecap="round"
-                                            opacity="0.45"
+                                            opacity="0.4"
                                             filter="url(#glowNeedle)"
                                         />
-                                        {/* 锐利红色机械指针 */}
+                                        {/* 跑车锋利双层机械指针本体 (贯穿圆心，带配重尾，彻底告别断截悬空) */}
                                         <polygon
-                                            points="108.8,90 111.2,90 110.5,25 109.5,25"
+                                            points="108.5,98 111.5,98 110.6,26 109.4,26"
                                             fill="url(#needleGrad)"
                                         />
-                                        {/* 指针尖端白热高亮点 */}
-                                        <circle cx="110" cy="24" r="1.5" fill="#ffffff" />
+                                        {/* 白热针尖微亮珠 */}
+                                        <circle cx="110" cy="25" r="1.5" fill="#ffffff" />
                                     </motion.g>
 
-                                    {/* 中心双层金属轮毂轴承 (Pivot Hub) */}
+                                    {/* 6. 高精度合金轮毂轴承盖 (Pivot Hub) - 牢牢包裹指针根部 */}
                                     <circle
                                         cx="110"
-                                        cy="90"
-                                        r="7.5"
-                                        className="fill-gray-900 dark:fill-[#0c121e] stroke-gray-300 dark:stroke-[#334155]"
-                                        strokeWidth="1.5"
+                                        cy="92"
+                                        r="9"
+                                        className="fill-gray-900 dark:fill-[#080d17] stroke-gray-300 dark:stroke-[#3b4c68]"
+                                        strokeWidth="1.8"
                                     />
                                     <circle
                                         cx="110"
-                                        cy="90"
-                                        r="4"
+                                        cy="92"
+                                        r="5.5"
+                                        className="fill-gray-800 dark:fill-[#121a2d] stroke-gray-400 dark:stroke-[#4a5f82]"
+                                        strokeWidth="1"
+                                    />
+                                    <circle
+                                        cx="110"
+                                        cy="92"
+                                        r="3"
                                         className="fill-rose-500 shadow-sm"
                                     />
                                     <circle
                                         cx="110"
-                                        cy="90"
-                                        r="1.5"
+                                        cy="92"
+                                        r="1.2"
                                         fill="#ffffff"
                                     />
                                 </svg>
