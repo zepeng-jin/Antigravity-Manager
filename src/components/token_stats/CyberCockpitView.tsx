@@ -17,7 +17,7 @@ import { request as invoke } from '../../utils/request';
 import { UserTokenStatsModal, UserTokenSummaryItem } from '../user_tokens/UserTokenStatsModal';
 import { listen } from '@tauri-apps/api/event';
 import { isTauri } from '../../utils/env';
-import { computeSlackStatus, formatDurationMs } from '../../utils/speedProbeLogSync';
+import { formatDurationMs } from '../../utils/speedProbeLogSync';
 
 interface TokenStatsSummary {
     total_input_tokens: number;
@@ -82,10 +82,10 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
     const [selectedUserToken, setSelectedUserToken] = useState<UserTokenSummaryItem | null>(null);
     const [showUserTokenModal, setShowUserTokenModal] = useState<boolean>(false);
 
-    // 实时速度探测与摸鱼雷达状态
-    const [probeResult, setProbeResult] = useState<any>(() => {
+    // 实时速度探测与前1分钟服务负载状态 (与首页大盘完全打通联动)
+    const [loadMetrics, setLoadMetrics] = useState<any>(() => {
         try {
-            const saved = localStorage.getItem('antigravity_last_speed_probe_result');
+            const saved = localStorage.getItem('antigravity_last_rolling_load_result');
             if (saved) return JSON.parse(saved);
         } catch (e) {}
         return null;
@@ -149,19 +149,31 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
         };
     }, [needleAngleRad]);
 
-    // 初次载入时，优先从真实网关日志同步最近一次真实调用的耗时 (与流量日志完全一致)
+    // 初次载入时，优先从真实网关日志同步前1分钟滑动负载 (与大盘完全联动一致)
     useEffect(() => {
-        invoke<any>('get_latest_real_speed')
-            .then((latest) => {
-                if (latest) {
-                    setProbeResult(latest);
-                    if (latest.model) setTargetModel(latest.model);
+        invoke<any>('get_one_minute_load', { model: null })
+            .then((load) => {
+                if (load) {
+                    setLoadMetrics(load);
+                    if (load.model) setTargetModel(load.model);
+                    try {
+                        localStorage.setItem('antigravity_last_rolling_load_result', JSON.stringify(load));
+                    } catch (e) {}
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+                invoke<any>('get_latest_real_speed')
+                    .then((latest) => {
+                        if (latest) {
+                            setLoadMetrics(latest);
+                            if (latest.model) setTargetModel(latest.model);
+                        }
+                    })
+                    .catch(() => {});
+            });
     }, []);
 
-    // 核心优化：除初次探测外，后续监听真实网关调用日志，零开销自动实时同步速度与码表指针
+    // 核心优化：监听真实网关调用日志，实时同步前1分钟负载与速度
     useEffect(() => {
         if (!isTauri()) return;
         let unlistenFn: (() => void) | null = null;
@@ -170,20 +182,17 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                 unlistenFn = await listen<any>('proxy://request', (event) => {
                     const log = event.payload;
                     if (!log || typeof log.duration !== 'number' || log.duration <= 0) return;
-                    const reqModel = log.model || targetModel;
-                    const liveMetrics = computeSlackStatus(
-                        log.duration,
-                        log.status || 200,
-                        log.output_tokens || 0,
-                        log.input_tokens || 0,
-                        reqModel,
-                        log.account_email || '',
-                        true
-                    );
-                    setProbeResult(liveMetrics);
-                    try {
-                        localStorage.setItem('antigravity_last_speed_probe_result', JSON.stringify(liveMetrics));
-                    } catch (e) {}
+                    invoke<any>('get_one_minute_load', { model: log.model || targetModel })
+                        .then((load) => {
+                            if (load) {
+                                setLoadMetrics(load);
+                                if (load.model) setTargetModel(load.model);
+                                try {
+                                    localStorage.setItem('antigravity_last_rolling_load_result', JSON.stringify(load));
+                                } catch (e) {}
+                            }
+                        })
+                        .catch(() => {});
                 });
             } catch (e) {
                 console.debug('[CyberCockpit] Log listener setup skipped:', e);
@@ -201,11 +210,14 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
         if (!m) return;
         setIsProbing(true);
         try {
-            const res = await invoke<any>('run_speed_probe', { model: m, accountEmail: null });
-            setProbeResult(res);
-            try {
-                localStorage.setItem('antigravity_last_speed_probe_result', JSON.stringify(res));
-            } catch (e) {}
+            await invoke<any>('run_speed_probe', { model: m, accountEmail: null });
+            const latestLoad = await invoke<any>('get_one_minute_load', { model: m });
+            if (latestLoad) {
+                setLoadMetrics(latestLoad);
+                try {
+                    localStorage.setItem('antigravity_last_rolling_load_result', JSON.stringify(latestLoad));
+                } catch (e) {}
+            }
         } catch (e) {
             console.error('[CyberCockpit] Probe error:', e);
         } finally {
@@ -744,13 +756,13 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                     <div className="flex items-center gap-1.5 truncate">
                                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                             isProbing ? 'bg-amber-400 animate-ping' :
-                                            probeResult?.success ? 'bg-emerald-400' :
-                                            probeResult?.error_msg ? 'bg-rose-400' : 'bg-emerald-400'
+                                            loadMetrics && !loadMetrics.is_idle ? 'bg-emerald-400' :
+                                            loadMetrics?.is_idle ? 'bg-cyan-400' : 'bg-emerald-400'
                                         }`} />
-                                        <span className="text-gray-600 dark:text-gray-300 truncate" title={probeResult?.slack_advice || '网关调用正常'}>
+                                        <span className="text-gray-600 dark:text-gray-300 truncate" title={loadMetrics?.slack_advice || '网关调用正常'}>
                                             {isProbing ? '正在测速...' :
-                                             probeResult?.success ? `${formatDurationMs(probeResult.ttft_ms)} · ${probeResult.slack_title}` :
-                                             probeResult?.error_msg ? '测速受阻 · 点击重测' :
+                                             loadMetrics && !loadMetrics.is_idle ? `${formatDurationMs(loadMetrics.avg_ttft_ms || loadMetrics.ttft_ms)} · ${loadMetrics.slack_title}` :
+                                             loadMetrics?.is_idle ? '近1分钟待机 · 通道就绪' :
                                              t('token_stats.cockpit_status_normal', '网关调用正常')}
                                         </span>
                                     </div>
@@ -760,7 +772,7 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                         disabled={isProbing}
                                         className="text-indigo-600 dark:text-cyan-400 hover:underline font-bold shrink-0 ml-1 cursor-pointer"
                                     >
-                                        {probeResult?.success ? `${probeResult.tps} t/s` : '测速'}
+                                        {loadMetrics && !loadMetrics.is_idle && loadMetrics.tps > 0 ? `${loadMetrics.tps} t/s` : '测速'}
                                     </button>
                                 </div>
                             </div>
@@ -879,7 +891,8 @@ export const CyberCockpitView: React.FC<CyberCockpitViewProps> = ({
                                     <span className="font-mono text-[11px] text-teal-600 dark:text-teal-400 font-semibold flex items-center gap-1">
                                         <Zap className={`w-3 h-3 ${isProbing ? 'animate-spin text-amber-400' : ''}`} />
                                         {isProbing ? '测速中...' :
-                                         probeResult?.success ? `${formatDurationMs(probeResult.ttft_ms)} · ${probeResult.tps}t/s` :
+                                         loadMetrics && !loadMetrics.is_idle ? `${formatDurationMs(loadMetrics.avg_ttft_ms || loadMetrics.ttft_ms)} · ${loadMetrics.tps} t/s` :
+                                         loadMetrics?.is_idle ? '待机就绪' :
                                          t('token_stats.zero_latency', '0 延时吞吐')}
                                     </span>
                                 </div>

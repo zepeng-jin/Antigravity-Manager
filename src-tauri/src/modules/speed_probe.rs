@@ -303,7 +303,7 @@ pub async fn probe_single_model_speed(
     let warmup_url = format!("http://127.0.0.1:{}/internal/warmup", port);
     let probe_payload = serde_json::json!({
         "email": account_email,
-        "model": model_name,
+        "model": mapped_model,
         "access_token": access_token,
         "project_id": project_id,
         "account_id": account_id,

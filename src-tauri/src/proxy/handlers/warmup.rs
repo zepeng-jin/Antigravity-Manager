@@ -142,9 +142,19 @@ pub async fn handle_warmup(
             }
         };
 
-    // ===== 步骤 2: 根据模型类型构建请求体 =====
-    let is_claude = req.model.to_lowercase().contains("claude");
-    let is_image = req.model.to_lowercase().contains("image");
+    // ===== 步骤 2: 模型路由映射与请求体构建 =====
+    let custom_mapping = crate::modules::config::load_app_config()
+        .map(|c| c.proxy.custom_mapping)
+        .unwrap_or_default();
+    let mapped_model = crate::proxy::common::model_mapping::resolve_model_route_with_effort(
+        &req.model,
+        &custom_mapping,
+        None,
+    );
+
+    let is_claude = mapped_model.to_lowercase().contains("claude")
+        || (req.model.to_lowercase().contains("claude") && !mapped_model.starts_with("gemini-"));
+    let is_image = mapped_model.to_lowercase().contains("image") || req.model.to_lowercase().contains("image");
 
     let body: Value = if is_claude {
         // Claude 模型：使用 transform_claude_request_in 转换
@@ -154,7 +164,7 @@ pub async fn handle_warmup(
             &uuid::Uuid::new_v4().to_string()[..8]
         );
         let claude_request = crate::proxy::mappers::claude::models::ClaudeRequest {
-            model: req.model.clone(),
+            model: mapped_model.clone(),
             messages: vec![crate::proxy::mappers::claude::models::Message {
                 role: "user".to_string(),
                 content: crate::proxy::mappers::claude::models::MessageContent::String(
@@ -261,7 +271,7 @@ pub async fn handle_warmup(
 
         let base_request = if is_image {
             json!({
-                "model": req.model,
+                "model": mapped_model,
                 "contents": [{"role": "user", "parts": [{"text": "Say hi"}]}],
                 "generationConfig": {
                     "maxOutputTokens": 10,
@@ -272,7 +282,7 @@ pub async fn handle_warmup(
             })
         } else {
             json!({
-                "model": req.model,
+                "model": mapped_model,
                 "contents": [{"role": "user", "parts": [{"text": "Say hi"}]}],
                 "generationConfig": {
                     "temperature": 0
@@ -284,7 +294,7 @@ pub async fn handle_warmup(
         wrap_request(
             &base_request,
             &project_id,
-            &req.model,
+            &mapped_model,
             None,
             Some(&session_id),
             None,
