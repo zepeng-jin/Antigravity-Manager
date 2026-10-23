@@ -98,37 +98,64 @@ export interface ModelPricingRule {
 }
 
 export const DEFAULT_PRICING: Record<string, ModelPricingRule> = {
-    // Google Gemini 3.x & 2.x
+    // ── Google Gemini 官方原生系列 (Antigravity 核心提供) ──
+    'gemini-4-argon': { input: 2.00, output: 10.00, cached: 0.10 },
     'gemini-3.8-flash': { input: 0.75, output: 3.75, cached: 0.075 },
     'gemini-3.7-flash': { input: 0.75, output: 3.75, cached: 0.075 },
     'gemini-3.6-flash': { input: 0.75, output: 3.75, cached: 0.075 },
     'gemini-3.5-flash': { input: 0.75, output: 3.75, cached: 0.075 },
-    'gemini-3-flash': { input: 0.75, output: 3.75, cached: 0.075 },
-    'gemini-2.5-flash': { input: 0.75, output: 3.75, cached: 0.075 },
-    'gemini-2.0-flash': { input: 0.10, output: 0.40, cached: 0.025 },
     'gemini-3.1-pro': { input: 2.00, output: 12.00, cached: 0.20 },
-    'gemini-3-pro': { input: 2.00, output: 12.00, cached: 0.20 },
+    'gemini-3.1-flash-lite': { input: 0.075, output: 0.30, cached: 0.02 },
     'gemini-2.5-pro': { input: 2.00, output: 12.00, cached: 0.20 },
-    // Anthropic Claude 4.x & 3.x
-    'claude-sonnet-4-6': { input: 3.00, output: 15.00, cached: 0.30 },
-    'claude-sonnet-4-5': { input: 3.00, output: 15.00, cached: 0.30 },
-    'claude-3-7-sonnet': { input: 3.00, output: 15.00, cached: 0.30 },
-    'claude-3-5-sonnet': { input: 3.00, output: 15.00, cached: 0.30 },
+    'gemini-2.5-flash': { input: 0.75, output: 3.75, cached: 0.075 },
+    'gemini-2.5-flash-lite': { input: 0.075, output: 0.30, cached: 0.02 },
+
+    // ── Anthropic Claude 官方原生系列 (Antigravity 核心提供) ──
+    'claude-opus-5-5': { input: 4.00, output: 20.00, cached: 0.20 },
+    'claude-sonnet-5-5': { input: 2.00, output: 10.00, cached: 0.20 },
     'claude-opus-4-6': { input: 5.00, output: 25.00, cached: 0.50 },
-    'claude-opus-4-5': { input: 5.00, output: 25.00, cached: 0.50 },
-    'claude-3-opus': { input: 5.00, output: 25.00, cached: 0.50 },
-    'claude-haiku-4': { input: 0.80, output: 4.00, cached: 0.08 },
-    'claude-3-5-haiku': { input: 0.80, output: 4.00, cached: 0.08 },
-    // OpenAI Models
-    'gpt-4o': { input: 2.50, output: 10.00, cached: 1.25 },
-    'gpt-4o-mini': { input: 0.15, output: 0.60, cached: 0.075 },
-    'o3-mini': { input: 1.10, output: 4.40, cached: 0.55 },
-    'o1': { input: 15.00, output: 60.00, cached: 7.50 },
-    // Default Fallback
+    'claude-sonnet-4-6': { input: 3.00, output: 15.00, cached: 0.30 },
+
+    // ── OpenAI 兼容官方模型 (Antigravity 开源权重提供) ──
+    'gpt-oss-120b': { input: 0.20, output: 0.80, cached: 0.05 },
+
+    // ── 全局未匹配模型兜底 ──
     'default': { input: 1.00, output: 5.00, cached: 0.10 },
 };
 
-const PRICING_STORAGE_KEY = 'antigravity_model_pricing_v2026';
+const PRICING_STORAGE_KEY = 'antigravity_model_pricing_v2026_pure';
+const LEGACY_STORAGE_KEYS = [
+    'antigravity_model_pricing_v2026_argon',
+    'antigravity_model_pricing_v2026',
+];
+
+// 非 Antigravity 官方实际提供或已停服的无关模型，彻底从价格矩阵中过滤精简
+const UNRELATED_PRICING_KEYS = new Set([
+    // 外部闭源非 Antigravity 提供模型
+    'gpt-4o',
+    'gpt-4o-mini',
+    'o3-mini',
+    'o1',
+    'gpt-4',
+    'gpt-4-turbo',
+    'gpt-3.5-turbo',
+    'claude-fable-5-1',
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-haiku-5-5',
+    'claude-haiku-4-5',
+    'claude-haiku-4',
+    'claude-3-7-sonnet',
+    'claude-3-5-sonnet',
+    'claude-3-opus',
+    'claude-3-5-haiku',
+    'claude-opus-4-5',
+    'claude-sonnet-4-5',
+    // 已下线淘汰历史版本
+    'gemini-2.0-flash',
+    'gemini-3-flash',
+    'gemini-3-pro',
+]);
 const DASHBOARD_MODE_KEY = 'antigravity_token_stats_dashboard_mode';
 const TIME_RANGE_KEY = 'antigravity_token_stats_time_range';
 const MINUTE_SPAN_KEY = 'antigravity_token_stats_minute_span';
@@ -325,11 +352,38 @@ const TokenStats: React.FC = () => {
     const [heatmapData, setHeatmapData] = useState<DayUsagePoint[]>([]);
     const [hourlyTrendData, setHourlyTrendData] = useState<HourlyUsagePoint[]>([]);
 
-    // 价格体系与自定义价格状态
+    // 价格体系与自定义价格状态 (仅保留 Antigravity 实际提供之核心官方模型矩阵)
     const [pricing, setPricing] = useState<Record<string, ModelPricingRule>>(() => {
         try {
+            // 1. 若存在纯净版定价缓存，直接读取并严格剔除非 Antigravity 模型
             const saved = localStorage.getItem(PRICING_STORAGE_KEY);
-            if (saved) return JSON.parse(saved);
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                const cleaned: Record<string, ModelPricingRule> = {};
+                for (const [k, v] of Object.entries(parsed)) {
+                    if (!UNRELATED_PRICING_KEYS.has(k)) {
+                        cleaned[k] = v as ModelPricingRule;
+                    }
+                }
+                return { ...DEFAULT_PRICING, ...cleaned };
+            }
+
+            // 2. 检查是否有历史旧版定价缓存，执行平滑迁移并剔除外部非 Antigravity 模型
+            for (const oldKey of LEGACY_STORAGE_KEYS) {
+                const legacySaved = localStorage.getItem(oldKey);
+                if (legacySaved) {
+                    const legacyParsed = JSON.parse(legacySaved);
+                    const merged: Record<string, ModelPricingRule> = { ...DEFAULT_PRICING };
+                    for (const [k, v] of Object.entries(legacyParsed)) {
+                        if (!UNRELATED_PRICING_KEYS.has(k) && !(k in DEFAULT_PRICING)) {
+                            merged[k] = v as ModelPricingRule;
+                        }
+                    }
+                    localStorage.setItem(PRICING_STORAGE_KEY, JSON.stringify(merged));
+                    localStorage.removeItem(oldKey);
+                    return merged;
+                }
+            }
         } catch (e) {}
         return DEFAULT_PRICING;
     });
@@ -340,8 +394,8 @@ const TokenStats: React.FC = () => {
         // 1. 直接精确命中
         if (pricing[key]) return pricing[key];
 
-        // 2. 剥除档位后缀进行规范化匹配 (如 -low, -high, -medium, -tiered, -extra-low, -xhigh, -lite, -default)
-        const stripped = key.replace(/-(tiered|max|xhigh|high|medium|default|low|extra-low|lite)$/, '');
+        // 2. 剥除档位后缀进行规范化匹配 (如 -low, -high, -medium, -tiered, -extra-low, -xhigh, -lite, -default, -thinking)
+        const stripped = key.replace(/-(tiered|max|xhigh|high|medium|default|low|extra-low|lite|thinking)$/, '');
         if (pricing[stripped]) return pricing[stripped];
 
         // 3. 点分与破折号互通匹配 (如 claude-sonnet-4.6 与 claude-sonnet-4-6)

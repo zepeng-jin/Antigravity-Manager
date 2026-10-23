@@ -39,7 +39,7 @@ export const PricingModal: React.FC<PricingModalProps> = ({
     const getModelCategory = (name: string): 'gemini' | 'claude' | 'openai' | 'other' => {
         const lower = name.toLowerCase();
         if (lower.startsWith('gemini')) return 'gemini';
-        if (lower.startsWith('claude')) return 'claude';
+        if (lower.startsWith('claude') || lower.startsWith('fable') || lower.startsWith('mythos')) return 'claude';
         if (lower.startsWith('gpt') || lower.startsWith('o1') || lower.startsWith('o3') || lower.startsWith('o4')) return 'openai';
         return 'other';
     };
@@ -259,7 +259,7 @@ export const PricingModal: React.FC<PricingModalProps> = ({
                     <div className="grid grid-cols-12 gap-2 items-center">
                         <input
                             type="text"
-                            placeholder={t('token_stats.model_pattern_placeholder', '模型匹配标识 (如 claude-5)')}
+                            placeholder={t('token_stats.model_pattern_placeholder', '模型匹配标识 (如 gemini-4-argon, claude-opus-5-5)')}
                             value={newModelName}
                             onChange={(e) => setNewModelName(e.target.value)}
                             className="col-span-5 px-3 py-1.5 bg-white dark:bg-black/30 border border-gray-300/80 dark:border-white/10 rounded-xl text-xs font-mono text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:border-emerald-500"

@@ -5,6 +5,8 @@ export interface OneMinuteLoadMetrics {
     rate_limit_count: number;
     error_count: number;
     model: string;
+    mapped_model?: string;
+    upstream_model?: string;
     display_name: string;
     avg_ttft_ms: number;
     avg_duration_ms: number;
@@ -112,7 +114,7 @@ export function computeSlackStatus(
         slack_level = 'sprint';
         slack_score = 10;
         slack_title = `${kTokens}k 上下文 · 算力全开`;
-        slack_advice = `正在高效处理 ${kTokens}k 超大规模工程上下文，GPU 吞吐极佳，链路高效稳定。`;
+        slack_advice = `正在高效处理 ${kTokens}k 超大规模工程上下文，服务极其稳定，链路高效顺畅。`;
     } else if (ttft_ms < 1200) {
         slack_level = 'sprint';
         slack_score = 5;

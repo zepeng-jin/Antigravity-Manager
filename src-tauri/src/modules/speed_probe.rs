@@ -24,60 +24,153 @@ pub struct SpeedProbeResult {
     pub timestamp: i64,
 }
 
-/// 真实测速模型元信息 (动态汇聚账号配额、官方目录与自定义映射)
+/// 真实测速模型元信息 (支持智能分层：今日活跃、长期Top3、Gemini 4新模型、账号原生及自定义映射)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProbeModelInfo {
     pub id: String,
     pub name: String,
     pub vendor: String,
-    pub source: String, // "account" (账号原生可用) | "custom" (自定义接口) | "official" (官方支持)
+    pub source: String,             // "today" | "top3" | "frontier_new" | "account" | "custom"
+    #[serde(default)]
+    pub category: String,           // 智能分组标题
+    #[serde(default)]
+    pub tag: Option<String>,        // 详细标签，如 "今日 No.1 · 369M"
+    #[serde(default)]
+    pub tokens_display: Option<String>,
+    #[serde(default)]
+    pub mapped_to: Option<String>,  // 底层物理转接模型 (如 "gemini-3.8-flash-tiered")
 }
 
-/// 动态获取当前环境真实可用的模型列表 (严格按实际使用量降序排列)
+fn format_tokens_short(tokens: u64) -> String {
+    if tokens >= 1_000_000_000 {
+        format!("{:.2}B", tokens as f64 / 1_000_000_000.0)
+    } else if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.0}K", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn get_model_vendor(model: &str) -> String {
+    let lower = model.to_lowercase();
+    if lower.contains("claude") {
+        "Anthropic".to_string()
+    } else if lower.contains("gpt") || lower.contains("o1") || lower.contains("o3") {
+        "OpenAI".to_string()
+    } else {
+        "Google".to_string()
+    }
+}
+
+fn is_frontier_new_model(model_id: &str) -> (bool, &'static str) {
+    let lower = model_id.to_lowercase();
+    if lower.contains("gemini-4") {
+        (true, "Gemini 4 前沿架构 (新模型)")
+    } else if lower.contains("5-5") || lower.contains("5.5") || lower.contains("claude-5") {
+        (true, "Claude 5.5 次世代 (新模型)")
+    } else if lower.contains("gpt-oss") {
+        (true, "GPT-OSS 旗舰模型")
+    } else {
+        (false, "")
+    }
+}
+
+/// 智能动态获取模型列表：涵盖【今日最活跃】、【长期主力Top3】、【前沿新模型(Gemini 4 / Claude 5.5)】、【账号原生】与【自定义映射】
 pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
     use std::collections::HashSet;
     let mut list = Vec::new();
-    let mut seen = HashSet::new();
 
-    // 1. 最高优先级：严格按真实用量降序排列 (使用量最大的主力模型排在首位)
-    if let Ok(stats) = crate::modules::token_stats::get_model_stats(0) {
-        for s in stats {
-            if !s.model.is_empty() && s.total_tokens > 0 && seen.insert(s.model.clone()) {
-                let vendor = if s.model.to_lowercase().contains("claude") {
-                    "Anthropic".to_string()
-                } else if s.model.to_lowercase().contains("gpt") {
-                    "OpenAI".to_string()
+    let custom_mapping = crate::modules::config::load_app_config()
+        .map(|c| c.proxy.custom_mapping)
+        .unwrap_or_default();
+
+    let resolve_underlying = |model_id: &str| -> Option<String> {
+        let mapped = crate::proxy::common::model_mapping::resolve_model_route_with_effort(
+            model_id,
+            &custom_mapping,
+            None,
+        );
+        if mapped != model_id {
+            Some(mapped)
+        } else {
+            None
+        }
+    };
+
+    // 1. 【今日最活跃 (近 24 小时)】：真实记录近 24 小时调用量最高的前 3 个模型
+    if let Ok(stats_24h) = crate::modules::token_stats::get_model_stats(24) {
+        let mut rank = 1;
+        for s in stats_24h {
+            if !s.model.is_empty() && s.total_tokens > 0 && rank <= 3 {
+                let formatted = format_tokens_short(s.total_tokens as u64);
+                let mapped_underlying = resolve_underlying(&s.model);
+                let tag_str = if let Some(ref m) = mapped_underlying {
+                    format!("今日 No.{} · {} | 底层: {}", rank, formatted, m)
                 } else {
-                    "Google".to_string()
+                    format!("今日 No.{} · {}", rank, formatted)
                 };
                 list.push(ProbeModelInfo {
                     id: s.model.clone(),
                     name: s.model.clone(),
-                    vendor,
-                    source: "usage_rank".to_string(),
+                    vendor: get_model_vendor(&s.model),
+                    source: "today".to_string(),
+                    category: "🌟 今日最活跃 (近24小时)".to_string(),
+                    tag: Some(tag_str),
+                    tokens_display: Some(formatted),
+                    mapped_to: mapped_underlying,
                 });
+                rank += 1;
             }
         }
     }
 
-    // 2. 补充当前账号配额中真实存在的模型
+    // 2. 【长期主力 Top 3】：历史总消耗累计最多的前 3 个模型
+    if let Ok(stats_all) = crate::modules::token_stats::get_model_stats(0) {
+        let mut rank = 1;
+        for s in stats_all {
+            if !s.model.is_empty() && s.total_tokens > 0 && rank <= 3 {
+                let formatted = format_tokens_short(s.total_tokens as u64);
+                let mapped_underlying = resolve_underlying(&s.model);
+                let tag_str = if let Some(ref m) = mapped_underlying {
+                    format!("长期 No.{} · {} | 底层: {}", rank, formatted, m)
+                } else {
+                    format!("长期 No.{} · {}", rank, formatted)
+                };
+                list.push(ProbeModelInfo {
+                    id: s.model.clone(),
+                    name: s.model.clone(),
+                    vendor: get_model_vendor(&s.model),
+                    source: "top3".to_string(),
+                    category: "🏆 长期主力 Top 3".to_string(),
+                    tag: Some(tag_str),
+                    tokens_display: Some(formatted),
+                    mapped_to: mapped_underlying,
+                });
+                rank += 1;
+            }
+        }
+    }
+
+    // 3. 【前沿新模型 (账号已激活可用)】：动态提取账号配额中已获得的 Gemini 4 / Claude 5.5 / GPT-OSS 等新模型
+    let mut frontier_seen = HashSet::new();
     if let Ok(accounts) = crate::modules::account::list_accounts() {
         for acc in accounts {
             if let Some(quota) = acc.quota {
                 for m in quota.models {
-                    if !m.name.is_empty() && seen.insert(m.name.clone()) {
-                        let vendor = if m.name.to_lowercase().contains("claude") {
-                            "Anthropic".to_string()
-                        } else if m.name.to_lowercase().contains("gpt") {
-                            "OpenAI".to_string()
-                        } else {
-                            "Google".to_string()
-                        };
+                    let (is_frontier, frontier_tag) = is_frontier_new_model(&m.name);
+                    if is_frontier && !m.name.is_empty() && frontier_seen.insert(m.name.clone()) {
+                        let mapped_underlying = resolve_underlying(&m.name);
                         list.push(ProbeModelInfo {
                             id: m.name.clone(),
                             name: m.name.clone(),
-                            vendor,
-                            source: "account".to_string(),
+                            vendor: get_model_vendor(&m.name),
+                            source: "frontier_new".to_string(),
+                            category: "🚀 前沿新模型 (账号已激活)".to_string(),
+                            tag: Some(frontier_tag.to_string()),
+                            tokens_display: None,
+                            mapped_to: mapped_underlying,
                         });
                     }
                 }
@@ -85,29 +178,47 @@ pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
         }
     }
 
-    // 3. 补充自定义映射接口模型
-    if let Ok(cfg) = crate::modules::config::load_app_config() {
-        for (k, _) in cfg.proxy.custom_mapping {
-            if !k.is_empty() && seen.insert(k.clone()) {
-                list.push(ProbeModelInfo {
-                    id: k.clone(),
-                    name: k,
-                    vendor: "Custom".to_string(),
-                    source: "custom".to_string(),
-                });
+    // 4. 【账号原生其他常用模型】
+    let mut account_seen = HashSet::new();
+    if let Ok(accounts) = crate::modules::account::list_accounts() {
+        for acc in accounts {
+            if let Some(quota) = acc.quota {
+                for m in quota.models {
+                    let (is_frontier, _) = is_frontier_new_model(&m.name);
+                    if !is_frontier && !m.name.is_empty() && account_seen.insert(m.name.clone()) {
+                        let mapped_underlying = resolve_underlying(&m.name);
+                        list.push(ProbeModelInfo {
+                            id: m.name.clone(),
+                            name: m.name.clone(),
+                            vendor: get_model_vendor(&m.name),
+                            source: "account".to_string(),
+                            category: "💎 账号原生可用".to_string(),
+                            tag: None,
+                            tokens_display: None,
+                            mapped_to: mapped_underlying,
+                        });
+                    }
+                }
             }
         }
     }
 
-    // 4. 补充默认常用主力模型
-    for default_m in &["gemini-3.8-flash-high", "claude-3.8-flash-high", "claude-sonnet-4-6", "gemini-2.0-flash"] {
-        if seen.insert(default_m.to_string()) {
-            list.push(ProbeModelInfo {
-                id: default_m.to_string(),
-                name: default_m.to_string(),
-                vendor: if default_m.contains("claude") { "Anthropic".to_string() } else { "Google".to_string() },
-                source: "official".to_string(),
-            });
+    // 5. 【自定义接口映射模型】
+    let mut custom_seen = HashSet::new();
+    if let Ok(cfg) = crate::modules::config::load_app_config() {
+        for (k, target) in cfg.proxy.custom_mapping {
+            if !k.is_empty() && custom_seen.insert(k.clone()) {
+                list.push(ProbeModelInfo {
+                    id: k.clone(),
+                    name: k.clone(),
+                    vendor: "Custom".to_string(),
+                    source: "custom".to_string(),
+                    category: "⚙️ 自定义接口映射".to_string(),
+                    tag: Some(format!("➔ {}", target)),
+                    tokens_display: None,
+                    mapped_to: Some(target),
+                });
+            }
         }
     }
 
@@ -152,7 +263,7 @@ pub fn calculate_slack_metrics(
         let k_tokens = input_tokens / 1000;
         let title = format!("{}k 上下文 · 算力全开", k_tokens);
         let advice = format!(
-            "正在高速处理 {}k 超大规模工程上下文，GPU 吞吐极佳，链路高效稳定。",
+            "正在高速处理 {}k 超大规模工程上下文，服务极其稳定，链路高效顺畅。",
             k_tokens
         );
         return ("sprint".to_string(), 10, title, advice);
@@ -286,16 +397,26 @@ pub async fn probe_single_model_speed(
 
     let body = body_res?;
 
-    let display_name = match model_name {
-        "gemini-3.8-flash-high" | "gemini-3.8-flash" => "Gemini 3.8 Flash",
-        "claude-3.8-flash-high" | "claude-3.8-flash" => "Claude 3.8 Flash",
-        "claude-sonnet-4-6" => "Claude Sonnet 4.6",
-        "claude-3-5-sonnet" => "Claude 3.5 Sonnet",
-        "gemini-2.0-flash" => "Gemini 2.0 Flash",
-        "gemini-1.5-pro" => "Gemini 1.5 Pro",
-        other => other,
-    }
-    .to_string();
+    let display_name = if model_name.contains("gemini-4") {
+        "Gemini 4 Argon".to_string()
+    } else if model_name.contains("claude-sonnet-5-5") {
+        "Claude 5.5 Sonnet".to_string()
+    } else if model_name.contains("claude-opus-5-5") {
+        "Claude 5.5 Opus".to_string()
+    } else if model_name.contains("gpt-oss") {
+        "GPT-OSS 120B".to_string()
+    } else {
+        match model_name {
+            "gemini-3.8-flash-high" | "gemini-3.8-flash" => "Gemini 3.8 Flash",
+            "claude-3.8-flash-high" | "claude-3.8-flash" => "Claude 3.8 Flash",
+            "claude-sonnet-4-6" => "Claude Sonnet 4.6",
+            "claude-3-5-sonnet" => "Claude 3.5 Sonnet",
+            "gemini-2.0-flash" => "Gemini 2.0 Flash",
+            "gemini-1.5-pro" => "Gemini 1.5 Pro",
+            other => other,
+        }
+        .to_string()
+    };
 
     // 4. 双通道智能测速：优先复用本地已启动的代理服务网关链路（100% 走通用户代理环境）
     let app_config = crate::modules::config::load_app_config().unwrap_or_default();
@@ -553,7 +674,11 @@ pub struct OneMinuteLoadMetrics {
     pub success_count: u32,
     pub rate_limit_count: u32,
     pub error_count: u32,
-    pub model: String,
+    pub model: String,                      // 客户端请求名 (例如 claude-3.8-flash-high)
+    #[serde(default)]
+    pub mapped_model: Option<String>,       // 路由转接底层物理模型 (例如 gemini-3.8-flash-tiered)
+    #[serde(default)]
+    pub upstream_model: Option<String>,     // 上游实际承载物理模型 (例如 gemini-3.8-flash-tiered)
     pub display_name: String,
     pub avg_ttft_ms: u64,
     pub avg_duration_ms: u64,
@@ -654,7 +779,7 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
     // 1. 查询过去 60 秒内的所有真实业务请求 (按时间倒序)
     let mut stmt = conn
         .prepare(
-            "SELECT id, timestamp, status, duration, model, input_tokens, output_tokens, error, response_headers
+            "SELECT id, timestamp, status, duration, model, input_tokens, output_tokens, error, response_headers, mapped_model, upstream_model
              FROM request_logs
              WHERE timestamp >= ?1 AND url NOT LIKE '%health%' AND url NOT LIKE '%event_logging%'
              ORDER BY timestamp DESC",
@@ -665,6 +790,8 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
         status: u16,
         duration: u64,
         model: Option<String>,
+        mapped_model: Option<String>,
+        upstream_model: Option<String>,
         input_tokens: u32,
         output_tokens: u32,
         error: Option<String>,
@@ -681,6 +808,8 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
             let output_tokens: u32 = row.get::<_, Option<u32>>(6)?.unwrap_or(0);
             let error: Option<String> = row.get(7)?;
             let resp_headers_str: Option<String> = row.get(8)?;
+            let mapped_model: Option<String> = row.get(9).unwrap_or(None);
+            let upstream_model: Option<String> = row.get(10).unwrap_or(None);
 
             let mut parsed_ttft = None;
             let mut parsed_stream = None;
@@ -710,6 +839,8 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
                 status,
                 duration,
                 model,
+                mapped_model,
+                upstream_model,
                 input_tokens,
                 output_tokens,
                 error,
@@ -740,14 +871,60 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
 
     let (last_active_ts, last_model) = last_active.unwrap_or((0, None));
 
+    // 动态提取近 1 分钟内实际调用频次最高的主力活跃模型
+    let mut model_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for r in &recent_requests {
+        if let Some(ref m) = r.model {
+            *model_counts.entry(m.clone()).or_insert(0) += 1;
+        }
+    }
+    let most_active_model = model_counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(m, _)| m);
+
     let default_model = "gemini-3.8-flash-high".to_string();
     let selected_model = target_model
+        .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
+        .or(most_active_model)
         .or_else(|| recent_requests.first().and_then(|r| r.model.clone()))
         .or(last_model)
         .unwrap_or(default_model);
 
-    let display_name = selected_model.clone();
+    // 动态提取所选模型对应的底层物理转接模型 (例如 claude-3.8-flash-high -> gemini-3.8-flash-tiered)
+    let (active_mapped, active_upstream) = recent_requests
+        .iter()
+        .find(|r| r.model.as_deref() == Some(&selected_model))
+        .and_then(|r| {
+            let m = r.mapped_model.clone().or_else(|| r.upstream_model.clone());
+            m.map(|val| (Some(val.clone()), Some(val)))
+        })
+        .unwrap_or_else(|| {
+            let custom_mapping = crate::modules::config::load_app_config()
+                .map(|c| c.proxy.custom_mapping)
+                .unwrap_or_default();
+            let mapped = crate::proxy::common::model_mapping::resolve_model_route_with_effort(
+                &selected_model,
+                &custom_mapping,
+                None,
+            );
+            if mapped != selected_model {
+                (Some(mapped.clone()), Some(mapped))
+            } else {
+                (None, None)
+            }
+        });
+
+    let display_name = if let Some(ref m) = active_mapped {
+        if m != &selected_model {
+            format!("{} ➔ {}", selected_model, m)
+        } else {
+            selected_model.clone()
+        }
+    } else {
+        selected_model.clone()
+    };
     let req_count = recent_requests.len() as u32;
 
     if req_count == 0 {
@@ -758,6 +935,8 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
             rate_limit_count: 0,
             error_count: 0,
             model: selected_model,
+            mapped_model: active_mapped.clone(),
+            upstream_model: active_upstream.clone(),
             display_name,
             avg_ttft_ms: 0,
             avg_duration_ms: 0,
@@ -825,9 +1004,14 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
     } else if total_input >= 20_000 && avg_ttft <= 60_000 {
         let k_tokens = total_input / 1000;
         let title = format!("前1分钟 {}k 吞吐 · 算力全开", k_tokens);
+        let underlying_hint = active_mapped
+            .as_ref()
+            .filter(|m| *m != &selected_model)
+            .map(|m| format!("（转接底层: {}）", m))
+            .unwrap_or_default();
         let advice = format!(
-            "近 1 分钟完成 {} 笔请求，处理 {}k 超大规模工程上下文，GPU 吞吐极佳，链路高效稳定。",
-            req_count, k_tokens
+            "近 1 分钟完成 {} 笔请求，处理 {}k 超大规模工程上下文{}，服务极其稳定，链路高效顺畅。",
+            req_count, k_tokens, underlying_hint
         );
         ("sprint".to_string(), 10, title, advice)
     } else if avg_ttft < 1200 {
@@ -867,6 +1051,8 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
         rate_limit_count,
         error_count,
         model: selected_model,
+        mapped_model: active_mapped,
+        upstream_model: active_upstream,
         display_name,
         avg_ttft_ms: avg_ttft,
         avg_duration_ms: avg_duration,
