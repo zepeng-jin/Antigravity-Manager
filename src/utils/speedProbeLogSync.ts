@@ -114,7 +114,7 @@ export function computeSlackStatus(
         slack_level = 'sprint';
         slack_score = 10;
         slack_title = `${kTokens}k 上下文 · 算力全开`;
-        slack_advice = `正在高效处理 ${kTokens}k 超大规模工程上下文，服务极其稳定，链路高效顺畅。`;
+        slack_advice = `近1分钟处理 ${kTokens}k 上下文 · 服务极其稳定`;
     } else if (ttft_ms < 1200) {
         slack_level = 'sprint';
         slack_score = 5;

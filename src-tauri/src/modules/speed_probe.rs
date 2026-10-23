@@ -64,23 +64,27 @@ fn get_model_vendor(model: &str) -> String {
     }
 }
 
-fn is_frontier_new_model(model_id: &str) -> (bool, &'static str) {
+fn is_frontier_flagship_model(model_id: &str) -> (bool, &'static str) {
     let lower = model_id.to_lowercase();
-    if lower.contains("gemini-4") {
-        (true, "Gemini 4 前沿架构 (新模型)")
-    } else if lower.contains("5-5") || lower.contains("5.5") || lower.contains("claude-5") {
-        (true, "Claude 5.5 次世代 (新模型)")
-    } else if lower.contains("gpt-oss") {
-        (true, "GPT-OSS 旗舰模型")
+    // 仅收录高阶旗舰 High/顶级模型，过滤掉 medium / low / extra-low 冗余条目
+    if lower == "gemini-4-argon-high" || (lower.contains("gemini-4") && !lower.contains("medium") && !lower.contains("low") && !lower.contains("lite")) {
+        (true, "Gemini 4 旗舰")
+    } else if lower == "claude-sonnet-5-5-high" || (lower.contains("sonnet-5-5") && !lower.contains("medium") && !lower.contains("low")) {
+        (true, "Claude 5.5 Sonnet")
+    } else if lower == "claude-opus-5-5-high" || (lower.contains("opus-5-5") && !lower.contains("medium") && !lower.contains("low")) {
+        (true, "Claude 5.5 Opus")
+    } else if lower == "gpt-oss-120b-medium" || lower == "gpt-oss-120b" {
+        (true, "GPT-OSS 旗舰")
     } else {
         (false, "")
     }
 }
 
-/// 智能动态获取模型列表：涵盖【今日最活跃】、【长期主力Top3】、【前沿新模型(Gemini 4 / Claude 5.5)】、【账号原生】与【自定义映射】
+/// 精选核心模型列表：严格控制在 8~10 个高频与旗舰模型，杜绝冗长刷屏
 pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
     use std::collections::HashSet;
     let mut list = Vec::new();
+    let mut seen_ids = HashSet::new();
 
     let custom_mapping = crate::modules::config::load_app_config()
         .map(|c| c.proxy.custom_mapping)
@@ -99,129 +103,84 @@ pub fn get_available_probe_models() -> Vec<ProbeModelInfo> {
         }
     };
 
-    // 1. 【今日最活跃 (近 24 小时)】：真实记录近 24 小时调用量最高的前 3 个模型
+    // 1. 【今日最活跃 (近 24 小时)】：取真实用量最高的前 2 个模型
     if let Ok(stats_24h) = crate::modules::token_stats::get_model_stats(24) {
-        let mut rank = 1;
+        let mut count = 0;
         for s in stats_24h {
-            if !s.model.is_empty() && s.total_tokens > 0 && rank <= 3 {
+            if !s.model.is_empty() && s.total_tokens > 0 && count < 2 {
                 let formatted = format_tokens_short(s.total_tokens as u64);
                 let mapped_underlying = resolve_underlying(&s.model);
-                let tag_str = if let Some(ref m) = mapped_underlying {
-                    format!("今日 No.{} · {} | 底层: {}", rank, formatted, m)
-                } else {
-                    format!("今日 No.{} · {}", rank, formatted)
-                };
+                let tag_str = format!("今日 · {}", formatted);
                 list.push(ProbeModelInfo {
                     id: s.model.clone(),
                     name: s.model.clone(),
                     vendor: get_model_vendor(&s.model),
                     source: "today".to_string(),
-                    category: "🌟 今日最活跃 (近24小时)".to_string(),
+                    category: "🌟 今日活跃".to_string(),
                     tag: Some(tag_str),
                     tokens_display: Some(formatted),
                     mapped_to: mapped_underlying,
                 });
-                rank += 1;
+                seen_ids.insert(s.model);
+                count += 1;
             }
         }
     }
 
-    // 2. 【长期主力 Top 3】：历史总消耗累计最多的前 3 个模型
+    // 2. 【长期主力】：补充历史总用量前列且尚未在今日入列的主力模型 (最多 2 个)
     if let Ok(stats_all) = crate::modules::token_stats::get_model_stats(0) {
-        let mut rank = 1;
+        let mut count = 0;
         for s in stats_all {
-            if !s.model.is_empty() && s.total_tokens > 0 && rank <= 3 {
-                let formatted = format_tokens_short(s.total_tokens as u64);
-                let mapped_underlying = resolve_underlying(&s.model);
-                let tag_str = if let Some(ref m) = mapped_underlying {
-                    format!("长期 No.{} · {} | 底层: {}", rank, formatted, m)
-                } else {
-                    format!("长期 No.{} · {}", rank, formatted)
-                };
-                list.push(ProbeModelInfo {
-                    id: s.model.clone(),
-                    name: s.model.clone(),
-                    vendor: get_model_vendor(&s.model),
-                    source: "top3".to_string(),
-                    category: "🏆 长期主力 Top 3".to_string(),
-                    tag: Some(tag_str),
-                    tokens_display: Some(formatted),
-                    mapped_to: mapped_underlying,
-                });
-                rank += 1;
+            if !s.model.is_empty() && s.total_tokens > 0 && count < 2 {
+                if seen_ids.insert(s.model.clone()) {
+                    let formatted = format_tokens_short(s.total_tokens as u64);
+                    let mapped_underlying = resolve_underlying(&s.model);
+                    let tag_str = format!("长期 · {}", formatted);
+                    list.push(ProbeModelInfo {
+                        id: s.model.clone(),
+                        name: s.model.clone(),
+                        vendor: get_model_vendor(&s.model),
+                        source: "top3".to_string(),
+                        category: "🏆 长期主力".to_string(),
+                        tag: Some(tag_str),
+                        tokens_display: Some(formatted),
+                        mapped_to: mapped_underlying,
+                    });
+                    count += 1;
+                }
             }
         }
     }
 
-    // 3. 【前沿新模型 (账号已激活可用)】：动态提取账号配额中已获得的 Gemini 4 / Claude 5.5 / GPT-OSS 等新模型
-    let mut frontier_seen = HashSet::new();
+    // 3. 【前沿新模型 (账号已激活)】：只收录顶级旗舰 (Gemini 4, Claude 5.5, GPT-OSS)，最多 4 个
     if let Ok(accounts) = crate::modules::account::list_accounts() {
         for acc in accounts {
             if let Some(quota) = acc.quota {
                 for m in quota.models {
-                    let (is_frontier, frontier_tag) = is_frontier_new_model(&m.name);
-                    if is_frontier && !m.name.is_empty() && frontier_seen.insert(m.name.clone()) {
+                    let (is_flagship, flagship_tag) = is_frontier_flagship_model(&m.name);
+                    if is_flagship && !m.name.is_empty() && seen_ids.insert(m.name.clone()) {
                         let mapped_underlying = resolve_underlying(&m.name);
                         list.push(ProbeModelInfo {
                             id: m.name.clone(),
                             name: m.name.clone(),
                             vendor: get_model_vendor(&m.name),
                             source: "frontier_new".to_string(),
-                            category: "🚀 前沿新模型 (账号已激活)".to_string(),
-                            tag: Some(frontier_tag.to_string()),
+                            category: "🚀 前沿新模型".to_string(),
+                            tag: Some(flagship_tag.to_string()),
                             tokens_display: None,
                             mapped_to: mapped_underlying,
                         });
+                        if list.len() >= 8 {
+                            break;
+                        }
                     }
                 }
             }
         }
     }
 
-    // 4. 【账号原生其他常用模型】
-    let mut account_seen = HashSet::new();
-    if let Ok(accounts) = crate::modules::account::list_accounts() {
-        for acc in accounts {
-            if let Some(quota) = acc.quota {
-                for m in quota.models {
-                    let (is_frontier, _) = is_frontier_new_model(&m.name);
-                    if !is_frontier && !m.name.is_empty() && account_seen.insert(m.name.clone()) {
-                        let mapped_underlying = resolve_underlying(&m.name);
-                        list.push(ProbeModelInfo {
-                            id: m.name.clone(),
-                            name: m.name.clone(),
-                            vendor: get_model_vendor(&m.name),
-                            source: "account".to_string(),
-                            category: "💎 账号原生可用".to_string(),
-                            tag: None,
-                            tokens_display: None,
-                            mapped_to: mapped_underlying,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // 5. 【自定义接口映射模型】
-    let mut custom_seen = HashSet::new();
-    if let Ok(cfg) = crate::modules::config::load_app_config() {
-        for (k, target) in cfg.proxy.custom_mapping {
-            if !k.is_empty() && custom_seen.insert(k.clone()) {
-                list.push(ProbeModelInfo {
-                    id: k.clone(),
-                    name: k.clone(),
-                    vendor: "Custom".to_string(),
-                    source: "custom".to_string(),
-                    category: "⚙️ 自定义接口映射".to_string(),
-                    tag: Some(format!("➔ {}", target)),
-                    tokens_display: None,
-                    mapped_to: Some(target),
-                });
-            }
-        }
-    }
-
+    // 严格硬顶：总条数严格不超过 8~9 个（加上自动感知项总共 ≤ 10 个）
+    list.truncate(9);
     list
 }
 
@@ -1004,14 +963,9 @@ pub fn get_one_minute_rolling_load(target_model: Option<&str>) -> Result<OneMinu
     } else if total_input >= 20_000 && avg_ttft <= 60_000 {
         let k_tokens = total_input / 1000;
         let title = format!("前1分钟 {}k 吞吐 · 算力全开", k_tokens);
-        let underlying_hint = active_mapped
-            .as_ref()
-            .filter(|m| *m != &selected_model)
-            .map(|m| format!("（转接底层: {}）", m))
-            .unwrap_or_default();
         let advice = format!(
-            "近 1 分钟完成 {} 笔请求，处理 {}k 超大规模工程上下文{}，服务极其稳定，链路高效顺畅。",
-            req_count, k_tokens, underlying_hint
+            "近1分钟 {} 笔请求 · 处理 {}k 上下文 · 服务极其稳定",
+            req_count, k_tokens
         );
         ("sprint".to_string(), 10, title, advice)
     } else if avg_ttft < 1200 {

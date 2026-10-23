@@ -280,11 +280,11 @@ export function SpeedProbeCard() {
                         </div>
                     </div>
 
-                    {/* 纯正主力模型选择胶囊 (智能分组：今日活跃、长期Top3、Gemini 4新模型、账号原生，并标注底层转接模型) */}
-                    <div className="flex items-center bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200/60 dark:hover:bg-white/[0.1] px-2 py-1 rounded-xl border border-gray-200/70 dark:border-white/[0.1] text-xs font-mono transition-all">
+                    {/* 纯正主力模型选择胶囊 (显示入口模型与物理转接，无重叠挤压) */}
+                    <div className="flex items-center bg-gray-100 dark:bg-white/[0.06] hover:bg-gray-200/60 dark:hover:bg-white/[0.1] px-2.5 py-1 rounded-xl border border-gray-200/70 dark:border-white/[0.1] text-xs font-mono transition-all">
                         <span className={`w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 ${isManualLocked ? 'bg-amber-400' : 'bg-cyan-400 animate-pulse'}`} />
                         <select
-                            value={selectedModel || metrics?.model || (dynamicTargets[0]?.id ?? 'gemini-3.8-flash-high')}
+                            value={isManualLocked ? selectedModel : '__auto__'}
                             onChange={(e) => {
                                 const val = e.target.value;
                                 if (val === '__auto__') {
@@ -296,7 +296,7 @@ export function SpeedProbeCard() {
                                     handleProbe(val);
                                 }
                             }}
-                            className="bg-transparent text-xs font-bold text-gray-800 dark:text-cyan-300 outline-none cursor-pointer pr-1 max-w-[210px]"
+                            className="bg-transparent text-xs font-bold text-gray-800 dark:text-cyan-300 outline-none cursor-pointer pr-1 shrink-0"
                             title={
                                 isManualLocked
                                     ? `手动锁定模型: ${selectedModel}`
@@ -306,16 +306,14 @@ export function SpeedProbeCard() {
                             }
                         >
                             <option value="__auto__" className="dark:bg-[#15161b] text-cyan-500 font-bold">
-                                ⚡ 自动感知 ({metrics?.display_name || metrics?.model || selectedModel || '跟随调用'})
+                                ⚡ {metrics?.model || selectedModel || '自动感知'}
                             </option>
                             {groupedOptions.map((group) => (
                                 <optgroup key={group.category} label={group.category} className="dark:bg-[#15161b] text-gray-400 font-semibold text-[11px]">
                                     {group.items.map((t, idx) => {
-                                        const isCurrentActive = t.id === metrics?.model;
                                         const mappedArrow = t.mapped_to && t.mapped_to !== t.id ? ` ➔ ${t.mapped_to}` : '';
-                                        const activeLabel = isCurrentActive ? ' ★ 当前调用' : '';
-                                        const tagLabel = t.tag ? ` [${t.tag}]` : '';
-                                        const label = `${t.id}${mappedArrow}${tagLabel}${activeLabel}`;
+                                        const tagSuffix = t.tag ? ` · ${t.tag}` : '';
+                                        const label = `${t.id}${mappedArrow}${tagSuffix}`;
                                         return (
                                             <option key={`${group.category}-${t.id}-${idx}`} value={t.id} className="dark:bg-[#15161b] text-gray-900 dark:text-zinc-100 font-normal">
                                                 {label}
@@ -328,8 +326,8 @@ export function SpeedProbeCard() {
                         {/* 若存在转接模型，在胶囊右侧显示醒目的底层映射提示 */}
                         {metrics?.mapped_model && metrics.mapped_model !== (metrics.model || selectedModel) && (
                             <span
-                                className="text-[10px] text-teal-600 dark:text-cyan-400 font-mono hidden lg:inline truncate max-w-[140px] border-l border-gray-200 dark:border-white/10 pl-1.5"
-                                title={`前置入口: ${metrics.model} ➔ 底层转接模型: ${metrics.mapped_model}`}
+                                className="text-[10px] text-teal-600 dark:text-cyan-400 font-mono shrink-0 border-l border-gray-200 dark:border-white/10 pl-1.5"
+                                title={`前置入口: ${metrics.model} ➔ 底层物理承载: ${metrics.mapped_model}`}
                             >
                                 ➔ {metrics.mapped_model}
                             </span>
